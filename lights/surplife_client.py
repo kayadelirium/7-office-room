@@ -230,6 +230,12 @@ class SurplifeLampClient(AbstractLampClient):
         self.device_name: str = address   # обновляется до имени лампы после connect()
         self._client: BleakClient | None = None
         self._seq = 0                     # счётчик пакетов, сбрасывается при connect()
+        # Последнее состояние для set_brightness (чтобы не терять текущий цвет)
+        self._last_mode: str = "white"    # "white" | "hsv"
+        self._last_hue: int = 0
+        self._last_sat: int = 100
+        self._last_cct: int = 50
+        self._last_bright: int = 100
 
     # ── Соединение ─────────────────────────────────────────────────────────
 
@@ -339,21 +345,36 @@ class SurplifeLampClient(AbstractLampClient):
         h, s, v = rgb_to_hsv(r, g, b)
         if s == 0:
             # Ахроматический цвет → белый режим с соответствующей яркостью
+            self._last_mode = "white"
+            self._last_bright = v
             await self.write_raw(_cmd_set_white(self._next_seq(), v))
         else:
+            self._last_mode = "hsv"
+            self._last_hue = h
+            self._last_sat = s
+            self._last_bright = v
             await self.write_raw(_cmd_set_color(self._next_seq(), h, s, v))
         logger.info("Surplife: цвет rgb(%d,%d,%d) → hsv(%d,%d,%d)", r, g, b, h, s, v)
 
     async def set_brightness(self, percent: int) -> None:
         """
-        Установить яркость в белом режиме (нейтральный CCT=50).
+        Установить яркость (0-100%), сохраняя текущий режим и цвет.
 
-        percent — 0-100%.
-        Если лампа сейчас в цветном режиме, она переключится в белый.
+        Если лампа в цветном режиме (HSV) — посылает HSV-команду с новой яркостью,
+        сохраняя оттенок и насыщенность.
+        Если лампа в белом режиме — посылает white-команду с сохранённой CCT.
         """
         percent = max(0, min(100, percent))
-        await self.write_raw(_cmd_set_white(self._next_seq(), percent))
-        logger.info("Surplife: яркость %d%%", percent)
+        self._last_bright = percent
+        if self._last_mode == "hsv":
+            await self.write_raw(_cmd_set_color(
+                self._next_seq(), self._last_hue, self._last_sat, percent
+            ))
+            logger.info("Surplife: яркость %d%% (HSV h=%d s=%d)", percent,
+                        self._last_hue, self._last_sat)
+        else:
+            await self.write_raw(_cmd_set_white(self._next_seq(), percent, self._last_cct))
+            logger.info("Surplife: яркость %d%% (white CCT=%d)", percent, self._last_cct)
 
     async def set_color_temperature(self, kelvin: int) -> None:
         """
@@ -367,6 +388,9 @@ class SurplifeLampClient(AbstractLampClient):
         """
         cct = round((kelvin - 2700) / (6500 - 2700) * 100)
         cct = max(0, min(100, cct))
+        self._last_mode = "white"
+        self._last_cct = cct
+        self._last_bright = 100
         await self.write_raw(_cmd_set_white(self._next_seq(), 100, cct))
         logger.info("Surplife: CCT %d K → %d%%", kelvin, cct)
 
@@ -380,6 +404,9 @@ class SurplifeLampClient(AbstractLampClient):
                       50  = нейтральный  (≈4600 K)  ← по умолчанию
                       100 = холодный     (≈6500 K)
         """
+        self._last_mode = "white"
+        self._last_bright = brightness
+        self._last_cct = color_temp
         await self.write_raw(_cmd_set_white(self._next_seq(), brightness, color_temp))
         logger.info("Surplife: белый %d%% CCT=%d%%", brightness, color_temp)
 
@@ -397,6 +424,10 @@ class SurplifeLampClient(AbstractLampClient):
             await lamp.set_color_hsv(120, 100, 80)  # зелёный, 80% яркости
             await lamp.set_color_hsv(240, 100, 80)  # синий,   80% яркости
         """
+        self._last_mode = "hsv"
+        self._last_hue = hue
+        self._last_sat = saturation
+        self._last_bright = brightness
         await self.write_raw(_cmd_set_color(self._next_seq(), hue, saturation, brightness))
         logger.info("Surplife: HSV(%d°, %d%%, %d%%)", hue, saturation, brightness)
 

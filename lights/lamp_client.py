@@ -311,6 +311,9 @@ class BLELampClient(AbstractLampClient):
         self.config: LampConfig = config or PRESETS[preset]
         self._on_notify = on_notify
         self._client: BleakClient | None = None
+        self._last_r: int | None = None   # последний установленный RGB-цвет
+        self._last_g: int | None = None
+        self._last_b: int | None = None
 
     # ── Соединение ─────────────────────────────────────────────────────────
 
@@ -422,22 +425,31 @@ class BLELampClient(AbstractLampClient):
           0xAA  — маркер конца команды (некоторые прошивки игнорируют)
         """
         r, g, b = _clamp(r), _clamp(g), _clamp(b)
+        self._last_r, self._last_g, self._last_b = r, g, b
         cmd = self._build_color_cmd(r, g, b)
         await self.write_raw(cmd)
         logger.info("Цвет: rgb(%d, %d, %d)", r, g, b)
 
     async def set_brightness(self, percent: int) -> None:
         """
-        Установить яркость (0–100%).
+        Установить яркость (0–100%), сохраняя текущий цвет.
 
-        Конвертируется в управление белым каналом лампы.
-        Формат Magic Home: [0x56, 0x00, 0x00, 0x00, W, 0x0F, 0xAA]
-          W = round(percent * 255 / 100)
-          0x0F — флаг: использовать White-канал (не RGB)
+        Если до этого был установлен RGB-цвет, масштабирует его компоненты
+        по коэффициенту яркости, сохраняя оттенок и насыщенность.
+        Если цвет ещё не задан — управляет White-каналом (исходное поведение).
+
+        Формат Magic Home White: [0x56, 0x00, 0x00, 0x00, W, 0x0F, 0xAA]
         """
         percent = max(0, min(100, percent))
-        value = round(percent * 255 / 100)
-        cmd = self._build_brightness_cmd(value)
+        if self._last_r is not None:
+            factor = percent / 100
+            r = round(self._last_r * factor)
+            g = round(self._last_g * factor)  # type: ignore[operator]
+            b = round(self._last_b * factor)  # type: ignore[operator]
+            cmd = self._build_color_cmd(r, g, b)
+        else:
+            value = round(percent * 255 / 100)
+            cmd = self._build_brightness_cmd(value)
         await self.write_raw(cmd)
         logger.info("Яркость: %d%%", percent)
 
@@ -676,6 +688,13 @@ class HappyLightingLampClient(BLELampClient):
         # [0x7e, 0x00, 0x01, value, 0x01, 0xff, 0xff, 0x00, 0xef]
         #  0x01 = яркость, value = 0-255, 0x01 = включено
         return bytes([0x7e, 0x00, 0x01, value, 0x01, 0xff, 0xff, 0x00, 0xef])
+
+    async def set_brightness(self, percent: int) -> None:
+        """HappyLighting имеет нативную команду яркости — не меняет цвет напрямую."""
+        percent = max(0, min(100, percent))
+        value = round(percent * 255 / 100)
+        await self.write_raw(self._build_brightness_cmd(value))
+        logger.info("Яркость: %d%%", percent)
 
     async def set_effect(self, mode: int, speed: int = 0x50) -> None:
         # [0x7e, 0x00, 0x03, mode, speed, 0x00, 0x00, 0xff, 0x00, 0xef]
