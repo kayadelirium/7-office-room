@@ -1,19 +1,19 @@
 """
-voice_assistant.py — голосовое управление BLE-лампой.
+voice_assistant.py — голосовой ассистент для управления BLE-лампой.
 
-Стек:
-  faster-whisper  — распознавание речи (локально, офлайн)
-  Ollama / Gemma  — NLU: перевод фразы в команду лампы
-  bleak           — BLE-соединение (через существующий lamp client)
+Пайплайн:
+  микрофон  →  faster-whisper (STT)  →  Ollama/Gemma (NLU)  →  BLE-лампа
+                                                              →  Silero / say (TTS-ответ)
 
-Установка зависимостей:
+Установка:
     pip install -r requirements.txt
-    ollama pull gemma3:4b   # или gemma3:1b для скорости
+    ollama pull gemma3:4b          # или gemma3:1b для скорости
 
 Запуск:
-    python voice_assistant.py <UUID>
-    python voice_assistant.py <UUID> --preset magic_home
-    python voice_assistant.py <UUID> --model gemma3:1b --whisper tiny
+    python voice_assistant.py                        # только голосовое сканирование/подключение
+    python voice_assistant.py <UUID>                 # сразу подключиться к лампе
+    python voice_assistant.py --tts-backend silero   # локальный TTS офлайн
+    python voice_assistant.py --model gemma3:1b --whisper tiny  # быстрый режим
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ import argparse
 import asyncio
 import json
 import platform
-import sys
 import urllib.request
 from typing import Optional
 
@@ -30,7 +29,11 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-from lights import AbstractLampClient, SurplifeLampClient, make_client, PRESETS, find_lamp
+from lights import (
+    AbstractLampClient, SurplifeLampClient,
+    make_client, PRESETS, find_lamp,
+    parse_hex_color, rgb_to_hsv,
+)
 from scanner import scan as ble_scan
 
 
@@ -60,7 +63,6 @@ class SileroTTS:
     def __init__(self, speaker: str = "xenia") -> None:
         try:
             import torch
-            self._torch = torch
         except ImportError:
             raise ImportError("Silero TTS требует torch: pip install torch omegaconf")
         print(f"Загрузка Silero TTS (speaker={speaker})...", end=" ", flush=True)
@@ -102,13 +104,12 @@ class SileroTTS:
         await loop.run_in_executor(None, _play)
 
 
-async def speak(text: str, voice: "str | SileroTTS | None") -> None:
-    """
-    Произнести текст через TTS.
-      voice=None       — TTS отключён
-      voice=SileroTTS  — локальный Silero
-      voice=str        — macOS say -v <voice>
-    """
+# str = имя голоса macOS say, SileroTTS = локальный движок, None = TTS отключён
+Voice = str | SileroTTS | None
+
+
+async def speak(text: str, voice: Voice) -> None:
+    """Произнести текст: None — молчать, SileroTTS — локально, str — macOS say."""
     if voice is None:
         return
     if isinstance(voice, SileroTTS):
@@ -123,12 +124,8 @@ async def speak(text: str, voice: "str | SileroTTS | None") -> None:
         await proc.wait()
 
 
-async def _do_and_speak(coro, text: str, voice: "str | SileroTTS | None") -> None:
-    """
-    Выполняет корутину (команда лампы) и воспроизводит TTS.
-    Для Silero: синтез запускается параллельно с BLE-командой,
-    что экономит ~0.3–1 с на некешированных фразах.
-    """
+async def _do_and_speak(coro, text: str, voice: Voice) -> None:
+    """Выполняет BLE-команду и воспроизводит TTS. Для Silero синтез идёт параллельно с командой."""
     if isinstance(voice, SileroTTS):
         loop = asyncio.get_running_loop()
         if text in voice._cache:
@@ -173,7 +170,8 @@ _COMMANDS = """\
   scan [seconds] [name]    — найти BLE-устройства поблизости (name — фильтр по имени)
   connect <name>           — подключиться к лампе по имени (или части имени)
   autoconnect [name]       — найти первую доступную лампу и сразу подключиться
-  default                  — найти и подключиться к лампе по умолчанию"""
+  default                  — найти и подключиться к лампе по умолчанию
+  status                   — текущий цвет и яркость лампы"""
 
 SYSTEM_PROMPT = f"""\
 Ты — умный домашний ассистент с управлением освещением.
@@ -219,6 +217,11 @@ SYSTEM_PROMPT = f"""\
   "включи дефолтную лампу"        → default
   "подключи лампу по умолчанию"   → default
   "дефолтная лампа"               → default
+  "какой сейчас цвет"             → status
+  "что сейчас горит"              → status
+  "какой режим"                   → status
+  "покажи текущий цвет"           → status
+  "что за цвет"                   → status
 
 Примеры фраз, не являющихся командами (→ unknown):
   "привет"              → unknown
@@ -325,18 +328,75 @@ class VoiceRecorder:
         return np.concatenate(chunks).flatten()
 
 
+# ─── Состояние лампы ──────────────────────────────────────────────────────────
+
+def _hue_to_name(hue: int) -> str:
+    """Примерное название цвета по оттенку (hue 0-359°)."""
+    h = hue % 360
+    if h < 15 or h >= 345: return "красный"
+    if h < 45:              return "оранжевый"
+    if h < 75:              return "жёлтый"
+    if h < 150:             return "зелёный"
+    if h < 195:             return "голубой"
+    if h < 255:             return "синий"
+    if h < 285:             return "фиолетовый"
+    return "малиновый"
+
+
+def _lamp_status_text(lamp: AbstractLampClient) -> str:
+    """Текстовое описание текущего состояния лампы для вывода и TTS."""
+    if isinstance(lamp, SurplifeLampClient):
+        mode   = lamp._last_mode
+        bright = lamp._last_bright
+        if mode == "hsv":
+            hue  = lamp._last_hue
+            sat  = lamp._last_sat
+            name = _hue_to_name(hue)
+            if sat < 20:
+                return f"Белый цвет, яркость {bright} процентов."
+            return f"{name.capitalize()}, насыщенность {sat} процентов, яркость {bright} процентов."
+        else:  # white
+            cct    = lamp._last_cct
+            kelvin = round(2700 + cct * 38)
+            warmth = "тёплый" if cct < 30 else ("нейтральный" if cct < 70 else "холодный")
+            return f"Белый свет, {warmth}, {kelvin} кельвин, яркость {bright} процентов."
+    else:
+        r, g, b = lamp._last_r, lamp._last_g, lamp._last_b
+        if r is None:
+            return "Цвет ещё не задавался в этой сессии."
+        return f"Цвет RGB: красный {r}, зелёный {g}, синий {b}."
+
+
+# ─── Вспомогательные константы для execute() ─────────────────────────────────
+
+_LAMP_CMDS = {"on", "off", "brightness", "temp", "rgb", "white", "hsv", "status"}
+
+
+def _is_hex(cmd: str) -> bool:
+    return cmd.startswith("#") or (len(cmd) == 6 and all(c in "0123456789abcdef" for c in cmd))
+
+
+async def _do_connect(address: str, preset: str, voice: Voice) -> AbstractLampClient:
+    """Подключиться к лампе по адресу, сообщить голосом и вернуть клиент."""
+    new_lamp = _make_lamp(address, preset)
+    print(f"Подключение к {address}...", end=" ", flush=True)
+    await speak("Подключаюсь.", voice)
+    await new_lamp.connect()
+    name = getattr(new_lamp, "device_name", address)
+    print(f"OK  ({name})")
+    await speak(f"Подключено к {name}.", voice)
+    return new_lamp
+
+
 # ─── Выполнение команды ───────────────────────────────────────────────────────
 
 async def execute(
     lamp: Optional[AbstractLampClient],
     command: str,
     preset: str,
-    voice: Optional[str] = None,
+    voice: Voice = None,
 ) -> Optional[AbstractLampClient]:
-    """
-    Разобрать строку-команду и выполнить её на лампе.
-    Возвращает новый AbstractLampClient если была команда connect, иначе None.
-    """
+    """Разобрать строку-команду и выполнить её. Возвращает новый клиент при connect-командах."""
     parts = command.strip().split()
     if not parts:
         return None
@@ -345,8 +405,7 @@ async def execute(
     print(f"→ {command}")
 
     # Команды лампы недоступны без подключения
-    _lamp_cmds = {"on", "off", "brightness", "temp", "rgb", "white", "hsv"}
-    if cmd in _lamp_cmds or cmd.startswith("#") or (len(cmd) == 6 and all(c in "0123456789abcdef" for c in cmd)):
+    if cmd in _LAMP_CMDS or _is_hex(cmd):
         if lamp is None:
             print("Лампа не подключена. Скажите 'подключись к <имя>' или запустите с UUID.")
             await speak("Лампа не подключена. Скажите подключись к, и назовите имя устройства.", voice)
@@ -415,42 +474,23 @@ async def execute(
                 print(f"Устройство '{name}' не найдено.")
                 await speak(f"Устройство {name} не найдено.", voice)
                 return None
-            new_lamp = _make_lamp(address, preset)
-            print(f"Подключение к {address}...", end=" ", flush=True)
-            await speak("Подключаюсь.", voice)
-            await new_lamp.connect()
-            name_connected = getattr(new_lamp, "device_name", address)
-            print(f"OK  ({name_connected})")
-            await speak(f"Подключено к {name_connected}.", voice)
-            return new_lamp
+            return await _do_connect(address, preset, voice)
 
         elif cmd == "autoconnect":
             name_filter = parts[1] if len(parts) > 1 else None
-            label = f"'{name_filter}'" if name_filter else "любую лампу"
-            print(f"Поиск: {label} (10 сек)...")
+            print(f"Поиск: {name_filter or 'любую лампу'} (10 сек)...")
             await speak(f"Ищу {'устройство ' + name_filter if name_filter else 'лампу'}.", voice)
-
             if name_filter:
                 address = await find_lamp(name_filter, timeout=10.0)
             else:
                 results = await ble_scan(timeout=10.0, name_filter=None)
-                # Берём первое устройство с именем
-                named = [(d, a) for d, a in results if d.name]
-                address = named[0][0].address if named else None
-
+                named = [d for d, _ in results if d.name]
+                address = named[0].address if named else None
             if address is None:
                 print("Устройства не найдены.")
                 await speak("Устройства поблизости не найдены.", voice)
                 return None
-
-            new_lamp = _make_lamp(address, preset)
-            print(f"Подключение к {address}...", end=" ", flush=True)
-            await speak("Подключаюсь.", voice)
-            await new_lamp.connect()
-            name_connected = getattr(new_lamp, "device_name", address)
-            print(f"OK  ({name_connected})")
-            await speak(f"Подключено к {name_connected}.", voice)
-            return new_lamp
+            return await _do_connect(address, preset, voice)
 
         elif cmd == "default":
             print(f"Поиск лампы по умолчанию '{DEFAULT_LAMP_NAME}'...")
@@ -460,14 +500,7 @@ async def execute(
                 print(f"Лампа '{DEFAULT_LAMP_NAME}' не найдена.")
                 await speak(f"Лампа {DEFAULT_LAMP_NAME} не найдена.", voice)
                 return None
-            new_lamp = _make_lamp(address, preset)
-            print(f"Подключение к {address}...", end=" ", flush=True)
-            await speak("Подключаюсь.", voice)
-            await new_lamp.connect()
-            name_connected = getattr(new_lamp, "device_name", address)
-            print(f"OK  ({name_connected})")
-            await speak(f"Подключено к {name_connected}.", voice)
-            return new_lamp
+            return await _do_connect(address, preset, voice)
 
         elif cmd == "scan":
             timeout = 10.0
@@ -486,8 +519,12 @@ async def execute(
             await speak(f"Найдено {len(results)} устройств.", voice)
             return None
 
-        elif cmd.startswith("#") or (len(cmd) == 6 and all(c in "0123456789abcdef" for c in cmd)):
-            from lights import parse_hex_color, rgb_to_hsv
+        elif cmd == "status":
+            status_text = _lamp_status_text(lamp)
+            print(f"Статус: {status_text}")
+            await speak(status_text, voice)
+
+        elif _is_hex(cmd):
             r, g, b = parse_hex_color(cmd)
             if isinstance(lamp, SurplifeLampClient):
                 h, s, v = rgb_to_hsv(r, g, b)
@@ -521,7 +558,7 @@ async def voice_loop(
     whisper: WhisperModel,
     ollama_model: str,
     ollama_url: str,
-    voice: Optional[str] = None,
+    voice: Voice = None,
 ) -> None:
     if lamp is not None:
         name = getattr(lamp, "device_name", lamp.address)
