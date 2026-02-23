@@ -1,19 +1,22 @@
 """
-voice_assistant.py — голосовой ассистент для управления BLE-лампой.
+voice_assistant.py — голосовой ассистент для управления BLE-лампой и BT-колонкой.
 
 Пайплайн:
-  микрофон  →  faster-whisper (STT)  →  Ollama/Gemma (NLU)  →  BLE-лампа
-                                                              →  Silero / say (TTS-ответ)
+  микрофон  →  faster-whisper (STT)  →  Ollama/Gemma (NLU)  →  BLE-лампа / BT-колонка
+                                                              →  Silero TTS (голосовой ответ)
 
 Установка:
     pip install -r requirements.txt
     ollama pull gemma3:4b          # или gemma3:1b для скорости
+    # Linux: sudo apt install libportaudio2
 
 Запуск:
-    python voice_assistant.py                        # только голосовое сканирование/подключение
+    python voice_assistant.py                        # без лампы — сканирование и подключение
     python voice_assistant.py <UUID>                 # сразу подключиться к лампе
-    python voice_assistant.py --tts-backend silero   # локальный TTS офлайн
+    python voice_assistant.py --stt-lang ru          # явный русский (меньше галлюцинаций)
     python voice_assistant.py --model gemma3:1b --whisper tiny  # быстрый режим
+    python voice_assistant.py --no-tts               # без голосовых ответов
+    python voice_assistant.py --speaker-mac AA:BB:CC:DD:EE:FF --speaker-name JBL
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from voice.ollama import (
     CHAT_SYSTEM, MAX_CHAT_HISTORY, WHISPER_PROMPT_RU,
 )
 from voice.tts import SileroTTS, Voice, _detect_lang, speak  # Voice = SileroTTS | None
+import speaker
 from lights import AbstractLampClient, SurplifeLampClient, PRESETS
 
 
@@ -143,6 +147,8 @@ async def async_main(args: argparse.Namespace) -> None:
     else:
         voice = SileroTTS(args.silero_speaker, args.silero_en_speaker)
 
+    speaker.configure(mac=args.speaker_mac, name=args.speaker_name)
+
     if args.address is None:
         await voice_loop(None, args.preset, whisper, args.model, args.ollama, voice, stt_lang)
         return
@@ -189,6 +195,10 @@ def main() -> None:
                         help="Английский голос Silero (по умолчанию: en_0; доступны en_0…en_117, lj_16khz)")
     parser.add_argument("--no-tts", action="store_true",
                         help="Отключить голосовые ответы")
+    parser.add_argument("--speaker-mac", default="",
+                        help="MAC-адрес BT-колонки (AA:BB:CC:DD:EE:FF)")
+    parser.add_argument("--speaker-name", default="",
+                        help="Подстрока имени колонки в списке аудиоустройств (напр. 'JBL', 'Sony')")
 
     args = parser.parse_args()
     asyncio.run(async_main(args))

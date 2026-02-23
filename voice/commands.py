@@ -11,6 +11,7 @@ from lights import (
 )
 from scanner import scan as ble_scan
 from voice.tts import Voice, speak, do_and_speak
+import speaker
 
 
 # ─── Имя лампы по умолчанию ───────────────────────────────────────────────────
@@ -243,6 +244,46 @@ async def execute(
                 coro = lamp.set_color(r, g, b)
             await do_and_speak(coro, "Цвет установлен.", voice)
             print("OK")
+
+        elif cmd == "speaker":
+            action = parts[1].lower() if len(parts) > 1 else ""
+            if action == "scan":
+                print("Сканирование BT-устройств...")
+                await speak("Сканирую, подождите.", voice)
+                devices = await speaker.scan(timeout=10.0)
+                if not devices:
+                    msg = "BT-устройства не найдены."
+                else:
+                    names = [d["name"] or d["address"] for d in devices]
+                    msg = f"Найдено {len(devices)}: {', '.join(names)}."
+                    for d in devices:
+                        print(f"  {d['address']}  {d['name'] or '(без имени)'}")
+                print(msg)
+                await speak(msg, voice)
+            elif action == "connect":
+                name_arg = parts[2] if len(parts) > 2 else ""
+                if name_arg:
+                    # Подключение по имени: speaker connect JBL
+                    print(f"Поиск BT-устройства «{name_arg}»...")
+                    await speak(f"Ищу {name_arg}, подождите.", voice)
+                    ok, msg = await speaker.connect_by_name(name_arg)
+                elif speaker.is_configured():
+                    # Подключение по сохранённому MAC/имени
+                    print("Подключение BT-колонки...")
+                    ok, msg = await speaker.connect()
+                else:
+                    msg = "Укажите имя колонки: «подключись к колонке JBL», или задайте --speaker-mac при запуске."
+                    print(msg)
+                    await speak(msg, voice)
+                    ok = False
+                    msg = ""
+                if msg:
+                    print(f"{'OK' if ok else 'FAIL'}  {msg}")
+                    await speak(msg, voice)
+            elif action == "disconnect":
+                ok, msg = await speaker.disconnect()
+                print(f"{'OK' if ok else 'FAIL'}  {msg}")
+                await speak(msg, voice)
 
         else:
             print(f"Неизвестная команда: {cmd!r}")

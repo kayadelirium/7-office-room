@@ -4,8 +4,11 @@ main.py — единая точка входа для управления BLE-�
 ─────────────────────────────────────────────────────────
 БЫСТРЫЙ СТАРТ
 ─────────────────────────────────────────────────────────
-Сканировать устройства и найти UUID своей лампы:
+Сканировать BLE-лампы поблизости:
     python main.py --scan
+
+Сканировать классические BT-колонки/наушники:
+    python main.py --scan-speakers
 
 Посмотреть GATT-сервисы лампы:
     python main.py --inspect <UUID>
@@ -384,9 +387,24 @@ def _make_lamp(address: str, preset: str) -> AbstractLampClient:
 # ---------------------------------------------------------------------------
 
 async def async_main(args: argparse.Namespace) -> None:
-    # ── Режим сканирования ────────────────────────────────────────────────
+    # ── Режим сканирования BLE ────────────────────────────────────────────
     if args.scan:
         await scan(timeout=args.timeout, name_filter=args.filter)
+        return
+
+    # ── Режим сканирования классического BT (колонки, наушники) ──────────
+    if args.scan_speakers:
+        from speaker import scan as bt_scan
+        print(f"Сканирование BT-устройств ({args.timeout:.0f} сек)...")
+        devices = await bt_scan(timeout=args.timeout)
+        if not devices:
+            print("BT-устройства не найдены.")
+        else:
+            print(f"Найдено {len(devices)} устройств:")
+            for d in devices:
+                name = d.get("name") or "(без имени)"
+                addr = d.get("address", "")
+                print(f"  {addr}  {name}")
         return
 
     # ── Режим инспекции GATT ──────────────────────────────────────────────
@@ -441,6 +459,8 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--scan", "-s", action="store_true",
                       help="Сканировать BLE-устройства поблизости")
+    mode.add_argument("--scan-speakers", action="store_true",
+                      help="Сканировать классические BT-устройства (колонки, наушники)")
     mode.add_argument("--inspect", metavar="UUID",
                       help="Подключиться к устройству и показать его GATT-сервисы")
 

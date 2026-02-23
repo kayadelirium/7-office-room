@@ -25,7 +25,10 @@ _COMMANDS = """\
   connect <name>           — подключиться к лампе по имени (или части имени)
   autoconnect [name]       — найти первую доступную лампу и сразу подключиться
   default                  — найти и подключиться к лампе по умолчанию
-  status                   — текущий цвет и яркость лампы"""
+  status                   — текущий цвет и яркость лампы
+  speaker connect [name]   — подключить BT-колонку (по имени или сохранённому MAC)
+  speaker disconnect       — отключить BT-колонку, вернуть стандартный аудиовыход
+  speaker scan             — найти классические BT-устройства поблизости"""
 
 SYSTEM_PROMPT = f"""\
 Ты — умный домашний ассистент с управлением освещением.
@@ -39,6 +42,8 @@ SYSTEM_PROMPT = f"""\
 - Отвечай ТОЛЬКО одной командой без пояснений и пунктуации.
 - Возвращай команду ТОЛЬКО если фраза явно относится к управлению лампой или устройствами.
 - Во всех остальных случаях (приветствия, вопросы, разговор, просьбы не про свет) — ответь: unknown
+- ВАЖНО: "scan" — это поиск BLE-ламп; "speaker scan" — поиск Bluetooth-колонок и наушников.
+  Фразы с "лампа/свет/BLE/устройство" → scan; фразы с "колонка/наушники/аудио/звук" → speaker scan.
 
 Примеры команд лампы:
   "включи свет"            → on
@@ -57,14 +62,19 @@ SYSTEM_PROMPT = f"""\
   "романтическая атмосфера" → rgb 180 30 10
   "3000 кельвин"           → temp 3000
   "оранжевый 60 процентов" → rgb 255 100 0
-  "найди устройства"              → scan
-  "сканируй 20 секунд"            → scan 20
-  "найди устройства с именем Lamp" → scan 10 Lamp
-  "сканируй Surplife"             → scan 10 Surplife
-  "подключись к лампе Surplife"   → connect Surplife
-  "соединись с bedroom"           → connect bedroom
-  "найди лампу и подключись"      → autoconnect
-  "найди и подключись"            → autoconnect
+  "найди лампы"                         → scan
+  "найди лампу"                         → scan
+  "поищи лампы"                         → scan
+  "сканируй лампы"                      → scan
+  "найди BLE устройства"                → scan
+  "найди устройства"                    → scan
+  "сканируй 20 секунд"                  → scan 20
+  "найди устройства с именем Lamp"      → scan 10 Lamp
+  "сканируй Surplife"                   → scan 10 Surplife
+  "подключись к лампе Surplife"         → connect Surplife
+  "соединись с bedroom"                 → connect bedroom
+  "найди лампу и подключись"            → autoconnect
+  "найди и подключись"                  → autoconnect
   "найди лампу Surplife и подключись к ней" → autoconnect Surplife
   "автоподключение"               → autoconnect
   "подключи лампу"                → default
@@ -76,6 +86,24 @@ SYSTEM_PROMPT = f"""\
   "какой режим"                   → status
   "покажи текущий цвет"           → status
   "что за цвет"                   → status
+  "подключи колонку"              → speaker connect
+  "включи колонку"                → speaker connect
+  "переключи звук на колонку"     → speaker connect
+  "подключись к колонке JBL"      → speaker connect JBL
+  "соединись с колонкой Sony"     → speaker connect Sony
+  "подключи Marshall"             → speaker connect Marshall
+  "подключись к Harman"           → speaker connect Harman
+  "отключи колонку"               → speaker disconnect
+  "выключи колонку"               → speaker disconnect
+  "найди колонки"                 → speaker scan
+  "найди колонку"                 → speaker scan
+  "поищи колонки"                 → speaker scan
+  "сканируй колонки"              → speaker scan
+  "найди наушники"                → speaker scan
+  "поищи наушники"                → speaker scan
+  "какие колонки рядом"           → speaker scan
+  "что за колонки поблизости"     → speaker scan
+  "поищи аудиоустройства"         → speaker scan
 
 Примеры фраз, не являющихся командами (→ unknown):
   "привет"              → unknown
@@ -122,6 +150,7 @@ _VALID_CMD_RE = re.compile(
         | white       \s+ \d+ ( \s+ \d+ )?
         | scan        ( \s+ [\d.]+ )? ( \s+ \S+ )?
         | \#? [0-9a-fA-F]{6} ( \s+ \d+ )?
+        | speaker     \s+ (connect(\s+\S+)?|disconnect|scan)
     )$""",
     re.VERBOSE | re.IGNORECASE,
 )

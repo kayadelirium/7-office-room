@@ -61,7 +61,11 @@ python voice_assistant.py --no-tts
 | «какой сейчас цвет» | голосом сообщает текущий режим |
 | «включи дефолтную лампу» | найти и подключить `IOTBT5AB` |
 | «подключись к Surplife» | найти и подключить по имени |
-| «найди устройства» | BLE-сканирование |
+| «найди лампы» / «найди BLE устройства» | BLE-сканирование (`scan`) |
+| «подключи колонку» / «включи колонку» | подключить BT-колонку (по сохранённому MAC) |
+| «подключись к колонке JBL» | найти JBL при сканировании и подключиться |
+| «отключи колонку» | отключить BT-колонку, вернуть стандартный аудиовыход |
+| «найди колонки» / «поищи наушники» | сканирование BT-колонок (`speaker scan`) |
 | всё остальное | разговорный режим (Гемма) |
 
 ### Аргументы
@@ -75,6 +79,8 @@ python voice_assistant.py --no-tts
 | `--silero-en-speaker` | `en_0` | Английский голос: `en_0`…`en_117`, `lj_16khz` |
 | `--preset` / `-p` | `surplife` | Протокол лампы |
 | `--no-tts` | — | Отключить голосовые ответы |
+| `--speaker-mac` | `""` | MAC-адрес BT-колонки (`AA:BB:CC:DD:EE:FF`) |
+| `--speaker-name` | `""` | Подстрока имени колонки в списке аудиоустройств (`JBL`, `Sony`) |
 
 ---
 
@@ -83,10 +89,14 @@ python voice_assistant.py --no-tts
 ### Найти адрес лампы
 
 ```bash
+# BLE-лампы
 python main.py --scan
+
+# Классические BT-колонки и наушники
+python main.py --scan-speakers
 ```
 
-На **macOS** адрес выглядит как UUID: `12345678-ABCD-1234-ABCD-1234567890AB`
+На **macOS** адрес лампы выглядит как UUID: `12345678-ABCD-1234-ABCD-1234567890AB`
 На **Linux/Windows** — как MAC: `AA:BB:CC:DD:EE:FF`
 
 ### Подключиться и управлять
@@ -172,7 +182,8 @@ python main.py --scan --timeout 20
 | `voice/tts.py` | `SileroTTS`, `speak`, `do_and_speak`, определение языка |
 | `voice/audio.py` | `VoiceRecorder` — запись с микрофона по VAD |
 | `voice/ollama.py` | Промпты, `ask_ollama`, стриминг ответов с TTS |
-| `voice/commands.py` | `execute` — разбор и выполнение команд лампы |
+| `voice/commands.py` | `execute` — разбор и выполнение команд лампы и колонки |
+| `speaker/__init__.py` | BT-колонка: `connect`, `connect_by_name`, `disconnect`, `scan` |
 | `lights/lamp_client.py` | `AbstractLampClient`, `BLELampClient`, протоколы, утилиты цвета |
 | `lights/surplife_client.py` | `SurplifeLampClient` — проприетарный протокол Surplife |
 | `requirements.txt` | Зависимости проекта |
@@ -194,8 +205,9 @@ python main.py --scan --timeout 20
 
 ## Заметки по платформам
 
-**macOS** — адрес устройства является CoreBluetooth UUID (не MAC). UUID стабилен для каждой пары хост–устройство, но меняется на другом компьютере.
+**macOS** — адрес устройства является CoreBluetooth UUID (не MAC). UUID стабилен для каждой пары хост–устройство, но меняется на другом компьютере. Для управления BT-колонкой (`speaker connect/disconnect/scan`) требуется `blueutil`: `brew install blueutil`.
 
-**Linux** — используется стандартный MAC-адрес. Может потребоваться запуск с `sudo` или настройка прав доступа к Bluetooth.
+**Linux** — используется стандартный MAC-адрес. Может потребоваться `sudo` или настройка прав Bluetooth. BT-колонкой управляет `bluetoothctl` (входит в BlueZ). Для записи звука требуется системный пакет: `sudo apt install libportaudio2`.
 
-**Windows** — адрес в формате MAC. Требуется Windows 10 версии 1709+ с поддержкой WinRT Bluetooth API.
+**Windows** — адрес в формате MAC. BT-подключение и сканирование колонок не поддерживаются; подключите устройство вручную через настройки системы. Переключение аудиовыхода через `--speaker-name` работает.
+
