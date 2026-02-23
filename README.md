@@ -33,11 +33,17 @@ python voice_assistant.py
 # Сразу подключиться к лампе
 python voice_assistant.py <UUID>
 
-# Локальный TTS (офлайн, Silero, русский голос)
-python voice_assistant.py --tts-backend silero
+# Whisper с явным русским языком (меньше галлюцинаций, быстрее)
+python voice_assistant.py --stt-lang ru
+
+# Другой голос Silero
+python voice_assistant.py --silero-speaker xenia
 
 # Быстрый режим (меньше точность, меньше задержка)
 python voice_assistant.py --model gemma3:1b --whisper tiny
+
+# Без озвучки
+python voice_assistant.py --no-tts
 ```
 
 ### Голосовые команды
@@ -56,17 +62,17 @@ python voice_assistant.py --model gemma3:1b --whisper tiny
 | «включи дефолтную лампу» | найти и подключить `IOTBT5AB` |
 | «подключись к Surplife» | найти и подключить по имени |
 | «найди устройства» | BLE-сканирование |
-| всё остальное | разговорный режим (Люмико) |
+| всё остальное | разговорный режим (Гемма) |
 
 ### Аргументы
 
 | Аргумент | По умолчанию | Описание |
 |----------|-------------|----------|
 | `--model` / `-m` | `gemma3:4b` | Модель Ollama |
-| `--whisper` / `-w` | `small` | Модель Whisper (`tiny`, `base`, `small`, `medium`) |
-| `--tts-backend` | `say` | TTS-движок: `say` (macOS) или `silero` (офлайн) |
-| `--silero-speaker` | `kseniya` | Голос Silero: `xenia`, `aidar`, `baya`, `kseniya`, `eugene` |
-| `--voice` / `-V` | `Milena` | Голос для macOS `say` |
+| `--whisper` / `-w` | `small` | Модель Whisper (`tiny`, `base`, `small`, `medium`, `large-v3-turbo`) |
+| `--stt-lang` | `""` | Язык распознавания: `ru`, `en` (пусто = авто-определение) |
+| `--silero-speaker` | `kseniya` | Русский голос: `xenia`, `aidar`, `baya`, `kseniya`, `eugene` |
+| `--silero-en-speaker` | `en_0` | Английский голос: `en_0`…`en_117`, `lj_16khz` |
 | `--preset` / `-p` | `surplife` | Протокол лампы |
 | `--no-tts` | — | Отключить голосовые ответы |
 
@@ -160,11 +166,15 @@ python main.py --scan --timeout 20
 
 | Файл | Назначение |
 |------|------------|
-| `voice_assistant.py` | Голосовой ассистент: Whisper + Ollama/Gemma + Silero TTS + BLE |
+| `voice_assistant.py` | Точка входа: аргументы CLI, `voice_loop`, запуск |
 | `main.py` | CLI и интерактивный режим управления лампой |
+| `scanner.py` | BLE-сканер, инспекция GATT-иерархии |
+| `voice/tts.py` | `SileroTTS`, `speak`, `do_and_speak`, определение языка |
+| `voice/audio.py` | `VoiceRecorder` — запись с микрофона по VAD |
+| `voice/ollama.py` | Промпты, `ask_ollama`, стриминг ответов с TTS |
+| `voice/commands.py` | `execute` — разбор и выполнение команд лампы |
 | `lights/lamp_client.py` | `AbstractLampClient`, `BLELampClient`, протоколы, утилиты цвета |
 | `lights/surplife_client.py` | `SurplifeLampClient` — проприетарный протокол Surplife |
-| `scanner.py` | BLE-сканер, инспекция GATT-иерархии |
 | `requirements.txt` | Зависимости проекта |
 
 ---
@@ -177,15 +187,15 @@ python main.py --scan --timeout 20
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Распознавание речи (STT) |
 | [sounddevice](https://python-sounddevice.readthedocs.io) | Запись с микрофона |
 | numpy | Обработка аудио |
-| [torch](https://pytorch.org) + omegaconf + scipy | Silero TTS (только с `--tts-backend silero`) |
+| [torch](https://pytorch.org) + omegaconf + scipy | Silero TTS |
 | [Ollama](https://ollama.com) | Локальный LLM (Gemma3) — установить отдельно |
 
 ---
 
 ## Заметки по платформам
 
-**macOS** — адрес устройства является CoreBluetooth UUID (не MAC). UUID стабилен для каждой пары хост–устройство, но меняется на другом компьютере. TTS через `say` работает нативно, без дополнительных зависимостей.
+**macOS** — адрес устройства является CoreBluetooth UUID (не MAC). UUID стабилен для каждой пары хост–устройство, но меняется на другом компьютере.
 
-**Linux** — используется стандартный MAC-адрес. Может потребоваться запуск с `sudo` или настройка прав доступа к Bluetooth. TTS через `say` недоступен, использовать `--tts-backend silero`.
+**Linux** — используется стандартный MAC-адрес. Может потребоваться запуск с `sudo` или настройка прав доступа к Bluetooth.
 
 **Windows** — адрес в формате MAC. Требуется Windows 10 версии 1709+ с поддержкой WinRT Bluetooth API.
