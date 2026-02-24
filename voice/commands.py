@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from lights import (
     AbstractLampClient, SurplifeLampClient,
     make_client, find_lamp,
@@ -90,11 +88,11 @@ async def _do_connect(address: str, preset: str, voice: Voice) -> AbstractLampCl
 # ─── Выполнение команды ───────────────────────────────────────────────────────
 
 async def execute(
-    lamp: Optional[AbstractLampClient],
+    lamp: AbstractLampClient | None,
     command: str,
     preset: str,
     voice: Voice = None,
-) -> Optional[AbstractLampClient]:
+) -> AbstractLampClient | None:
     """Разобрать строку-команду и выполнить её. Возвращает новый клиент при connect-командах."""
     parts = command.strip().split()
     if not parts:
