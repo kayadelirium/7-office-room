@@ -78,7 +78,7 @@ def lamp_status_text(lamp: AbstractLampClient) -> str:
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
 
-_LAMP_CMDS = {"on", "off", "brightness", "temp", "rgb", "white", "hsv", "status"}
+_LAMP_CMDS = {"on", "off", "brightness", "temp", "rgb", "white", "hsv", "status", "strip", "lamp"}
 
 
 def _is_hex(cmd: str) -> bool:
@@ -119,6 +119,90 @@ async def _do_connect(address: str, preset: str, voice: Voice) -> AbstractLampCl
     return new_lamp
 
 
+async def _connect_one_default(index: int, voice: Voice) -> AbstractLampClient | None:
+    """Подключиться к одной лампе из DEFAULT_LAMPS по индексу (0 = лента, 1 = лампа)."""
+    if index >= len(DEFAULT_LAMPS):
+        return None
+    entry = DEFAULT_LAMPS[index]
+    addr = entry.get("address", "").strip()
+    if not addr:
+        addr = await find_lamp(entry["name"], timeout=8.0)
+    if not addr:
+        return None
+    try:
+        return await _do_connect(addr, entry["preset"], voice)
+    except Exception as e:
+        print(f"Не удалось подключиться к {entry['name']}: {e}")
+        return None
+
+
+async def _apply_subcmd(
+    target: AbstractLampClient,
+    args: list[str],
+    voice: Voice,
+) -> None:
+    """Применить подкоманду (on/off/brightness/rgb/…) к одной конкретной лампе."""
+    if not args:
+        return
+    subcmd = args[0].lower()
+    if subcmd == "on":
+        await target.turn_on()
+        await speak("Включено.", voice)
+        print("OK")
+    elif subcmd == "off":
+        await target.turn_off()
+        await speak("Выключено.", voice)
+        print("OK")
+    elif subcmd == "brightness":
+        pct = int(args[1])
+        await target.set_brightness(pct)
+        await speak(f"Яркость {pct} процентов.", voice)
+        print("OK")
+    elif subcmd == "temp":
+        k = int(args[1])
+        await target.set_color_temperature(k)
+        await speak(f"Температура {k} кельвин.", voice)
+        print("OK")
+    elif subcmd == "rgb":
+        await target.set_color(int(args[1]), int(args[2]), int(args[3]))
+        await speak("Цвет установлен.", voice)
+        print("OK")
+    elif subcmd == "white":
+        if not isinstance(target, SurplifeLampClient):
+            print("Команда white поддерживается только для Surplife.")
+            await speak("Команда белого режима поддерживается только для Surplife.", voice)
+            return
+        bright = int(args[1])
+        cct = int(args[2]) if len(args) > 2 else 50
+        await target.set_white(bright, cct)
+        await speak(f"Белый режим, яркость {bright} процентов.", voice)
+        print("OK")
+    elif subcmd == "hsv":
+        if not isinstance(target, SurplifeLampClient):
+            print("Команда hsv поддерживается только для Surplife.")
+            await speak("Команда HSV поддерживается только для Surplife.", voice)
+            return
+        hue = int(args[1])
+        sat = int(args[2]) if len(args) > 2 else 100
+        bright = int(args[3]) if len(args) > 3 else 100
+        await target.set_color_hsv(hue, sat, bright)
+        await speak("Цвет установлен.", voice)
+        print("OK")
+    elif _is_hex(subcmd):
+        r, g, b = parse_hex_color(subcmd)
+        if isinstance(target, SurplifeLampClient):
+            h, s, v = rgb_to_hsv(r, g, b)
+            bri = int(args[1]) if len(args) > 1 else v
+            await (target.set_white(bri) if s == 0 else target.set_color_hsv(h, s, bri))
+        else:
+            await target.set_color(r, g, b)
+        await speak("Цвет установлен.", voice)
+        print("OK")
+    else:
+        print(f"Неизвестная подкоманда: {subcmd!r}")
+        await speak("Неизвестная команда.", voice)
+
+
 # ─── Выполнение команды ───────────────────────────────────────────────────────
 
 async def execute(
@@ -139,8 +223,8 @@ async def execute(
     cmd = parts[0].lower()
     print(f"→ {command}")
 
-    # Команды лампы недоступны без подключения (кроме "on" — он умеет авто-подключаться)
-    if (cmd in _LAMP_CMDS or _is_hex(cmd)) and cmd != "on":
+    # Команды лампы недоступны без подключения (кроме on/strip/lamp — они умеют авто-подключаться)
+    if (cmd in _LAMP_CMDS or _is_hex(cmd)) and cmd not in ("on", "strip", "lamp"):
         if not lamps:
             print("Лампа не подключена. Скажите 'подключись к <имя>' или запустите с UUID.")
             await speak("Лампа не подключена. Скажите подключись к, и назовите имя устройства.", voice)
@@ -288,6 +372,31 @@ async def execute(
             await asyncio.gather(*coros)
             await speak("Цвет установлен.", voice)
             print("OK")
+
+        elif cmd in ("strip", "lamp"):
+            # strip → лента (DEFAULT_LAMPS[0], не-Surplife)
+            # lamp  → лампа (DEFAULT_LAMPS[1], Surplife)
+            if cmd == "strip":
+                target = next((l for l in lamps if not isinstance(l, SurplifeLampClient)), None)
+            else:
+                target = next((l for l in lamps if isinstance(l, SurplifeLampClient)), None)
+
+            new_connected: AbstractLampClient | None = None
+            if target is None:
+                idx = 0 if cmd == "strip" else 1
+                label = "Ищу ленту." if cmd == "strip" else "Ищу лампу."
+                await speak(label, voice)
+                target = await _connect_one_default(idx, voice)
+                if target is None:
+                    not_found = "Лента не найдена." if cmd == "strip" else "Лампа не найдена."
+                    print(not_found)
+                    await speak(not_found, voice)
+                    return None
+                new_connected = target
+
+            await _apply_subcmd(target, parts[1:], voice)
+            # Если подключили новую лампу — вернуть расширенный список
+            return lamps + [new_connected] if new_connected is not None else None
 
         elif cmd == "speaker":
             action = parts[1].lower() if len(parts) > 1 else ""

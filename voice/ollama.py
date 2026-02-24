@@ -26,6 +26,10 @@ _COMMANDS = """\
   autoconnect [name]       — найти первую доступную лампу и сразу подключиться
   default                  — найти и подключиться к лампе по умолчанию
   status                   — текущий цвет и яркость лампы
+  strip <cmd>              — управлять только лентой (ELK-BLEDOM, первое устройство по умолчанию)
+  lamp <cmd>               — управлять только настольной лампой (Surplife, второе устройство по умолчанию)
+                             <cmd>: on | off | brightness <n> | rgb <R> <G> <B> | hsv <h> [s] [v]
+                                    white <bright> [cct] | temp <K> | #RRGGBB [bright]
   speaker connect [name]   — подключить BT-колонку (по имени или сохранённому MAC)
   speaker disconnect       — отключить BT-колонку, вернуть стандартный аудиовыход
   speaker scan             — найти классические BT-устройства поблизости"""
@@ -104,6 +108,23 @@ SYSTEM_PROMPT = f"""\
   "какие колонки рядом"           → speaker scan
   "что за колонки поблизости"     → speaker scan
   "поищи аудиоустройства"         → speaker scan
+  "включи ленту"                  → strip on
+  "зажги ленту"                   → strip on
+  "включи подсветку"              → strip on
+  "выключи ленту"                 → strip off
+  "потуши ленту"                  → strip off
+  "сделай ленту красной"          → strip rgb 255 0 0
+  "синяя лента"                   → strip rgb 0 0 255
+  "яркость ленты 50"              → strip brightness 50
+  "включи лампу"                  → lamp on
+  "зажги лампу"                   → lamp on
+  "выключи лампу"                 → lamp off
+  "потуши лампу"                  → lamp off
+  "яркость лампы 80"              → lamp brightness 80
+  "тёплый свет лампы"             → lamp white 70 10
+  "холодный свет на лампе"        → lamp white 80 100
+  "сделай лампу красной"          → lamp rgb 255 0 0
+  "синий на лампе"                → lamp hsv 240 100 70
 
 Примеры фраз, не являющихся командами (→ unknown):
   "привет"              → unknown
@@ -151,6 +172,15 @@ _VALID_CMD_RE = re.compile(
         | scan        ( \s+ [\d.]+ )? ( \s+ \S+ )?
         | \#? [0-9a-fA-F]{6} ( \s+ \d+ )?
         | speaker     \s+ (connect(\s+\S+)?|disconnect|scan)
+        | (strip|lamp) \s+ (
+            on | off
+            | brightness  \s+ \d+
+            | temp        \s+ \d+
+            | rgb         \s+ \d+ \s+ \d+ \s+ \d+
+            | hsv         \s+ \d+ ( \s+ \d+ ){0,2}
+            | white       \s+ \d+ ( \s+ \d+ )?
+            | \#? [0-9a-fA-F]{6} ( \s+ \d+ )?
+          )
     )$""",
     re.VERBOSE | re.IGNORECASE,
 )
