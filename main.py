@@ -44,11 +44,10 @@ main.py — единая точка входа для управления BLE-�
 ─────────────────────────────────────────────────────────
 АРХИТЕКТУРА
 ─────────────────────────────────────────────────────────
-  lamp_client.py      — AbstractLampClient (ABC), BLELampClient,
-                        Triones/HappyLighting клиенты, вспомогательные утилиты,
-                        словарь PRESETS с конфигами протоколов
-  surplife_client.py  — SurplifeLampClient (наследует AbstractLampClient),
-                        реализует проприетарный протокол с seq-заголовком
+  lights/             — пакет световых клиентов:
+    lamp_client.py      AbstractLampClient (ABC), BLELampClient,
+                        Triones/HappyLighting клиенты, утилиты, PRESETS
+    surplife_client.py  SurplifeLampClient — проприетарный протокол Surplife
   scanner.py          — BLE-сканер, инспекция GATT-сервисов
   main.py             — этот файл: CLI-обёртка над всем вышеперечисленным
 """
@@ -60,13 +59,13 @@ import argparse
 import logging
 import sys
 
-from lamp_client import (
+from lights import (
     AbstractLampClient,
     BLELampClient, LampConfig, PRESETS,
     find_lamp, make_client,
     rgb_to_hsv, hsv_to_rgb_255, parse_hex_color,
+    SurplifeLampClient,
 )
-from surplife_client import SurplifeLampClient
 from scanner import scan, inspect_device
 
 
