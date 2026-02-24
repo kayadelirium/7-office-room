@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import urllib.request
 
 from faster_whisper import WhisperModel
 
@@ -133,10 +134,53 @@ async def voice_loop(
             break
 
 
+# ─── Проверка и автозапуск Ollama ─────────────────────────────────────────────
+
+def _ollama_reachable(url: str) -> bool:
+    try:
+        urllib.request.urlopen(f"{url}/api/tags", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+async def _ensure_ollama(url: str) -> bool:
+    """Проверить доступность Ollama; при необходимости запустить `ollama serve`.
+
+    Возвращает True если Ollama готова к работе, False если запустить не удалось.
+    """
+    if _ollama_reachable(url):
+        return True
+
+    print("Ollama не отвечает. Запускаю `ollama serve`...", end=" ", flush=True)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ollama", "serve",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        print("\nollama не найден. Установите: https://ollama.com")
+        return False
+
+    for _ in range(10):
+        await asyncio.sleep(1)
+        if _ollama_reachable(url):
+            print("OK")
+            return True
+
+    proc.terminate()
+    print("\nОllama не запустилась за 10 сек. Запустите вручную: ollama serve")
+    return False
+
+
 # ─── Точка входа ──────────────────────────────────────────────────────────────
 
 async def async_main(args: argparse.Namespace) -> None:
     stt_lang = args.stt_lang
+
+    if not await _ensure_ollama(args.ollama):
+        return
 
     print(f"Загрузка Whisper ({args.whisper})...", end=" ", flush=True)
     whisper = WhisperModel(args.whisper, device="cpu", compute_type="int8")
@@ -186,8 +230,8 @@ def main() -> None:
                         help="Модель Whisper (по умолчанию: small)")
     parser.add_argument("--stt-lang", default="",
                         help="Язык распознавания: ru, en (пусто = авто-определение)")
-    parser.add_argument("--ollama", default="http://localhost:11434",
-                        help="URL Ollama (по умолчанию: http://localhost:11434)")
+    parser.add_argument("--ollama", default="http://127.0.0.1:11434",
+                        help="URL Ollama (по умолчанию: http://127.0.0.1:11434)")
     parser.add_argument("--silero-speaker", default="kseniya",
                         choices=["xenia", "aidar", "baya", "kseniya", "eugene"],
                         help="Русский голос Silero (по умолчанию: kseniya)")
