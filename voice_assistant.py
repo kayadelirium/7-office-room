@@ -41,7 +41,7 @@ from lights import AbstractLampClient, SurplifeLampClient, PRESETS
 # ─── Главный цикл ─────────────────────────────────────────────────────────────
 
 async def voice_loop(
-    lamp: AbstractLampClient | None,
+    lamps: list[AbstractLampClient],
     preset: str,
     whisper: WhisperModel,
     ollama_model: str,
@@ -49,9 +49,9 @@ async def voice_loop(
     voice: Voice = None,
     stt_lang: str = "",
 ) -> None:
-    if lamp is not None:
-        name = getattr(lamp, "device_name", lamp.address)
-        print(f"\nГолосовое управление: {name}  (пресет: {preset})")
+    if lamps:
+        names = ", ".join(getattr(l, "device_name", l.address) for l in lamps)
+        print(f"\nГолосовое управление: {names}  (пресет: {preset})")
     else:
         print("\nГолосовое управление (без лампы — только сканирование)")
     print("Говорите команды. Ctrl+C для выхода.\n")
@@ -120,13 +120,18 @@ async def voice_loop(
                 continue
 
             # Выполнение команды лампы
-            new_lamp = await execute(lamp, command, preset, voice)
-            if new_lamp is not None:
-                if lamp is not None:
-                    await lamp.disconnect()
-                lamp = new_lamp
-                name = getattr(lamp, "device_name", lamp.address)
-                print(f"Активная лампа: {name}")
+            new_lamps = await execute(lamps, command, preset, voice)
+            if new_lamps is not None:
+                # Отключить лампы, которых нет в новом списке
+                for old in lamps:
+                    if old not in new_lamps:
+                        try:
+                            await old.disconnect()
+                        except Exception:
+                            pass
+                lamps = new_lamps
+                names = ", ".join(getattr(l, "device_name", l.address) for l in lamps)
+                print(f"Активные лампы: {names}")
             print()
 
         except KeyboardInterrupt:
@@ -194,7 +199,7 @@ async def async_main(args: argparse.Namespace) -> None:
     speaker.configure(mac=args.speaker_mac, name=args.speaker_name)
 
     if args.address is None:
-        await voice_loop(None, args.preset, whisper, args.model, args.ollama, voice, stt_lang)
+        await voice_loop([], args.preset, whisper, args.model, args.ollama, voice, stt_lang)
         return
 
     lamp = make_lamp(args.address, args.preset)
@@ -204,12 +209,12 @@ async def async_main(args: argparse.Namespace) -> None:
         await lamp.connect()
         print(f"OK  ({lamp.device_name})")
         try:
-            await voice_loop(lamp, args.preset, whisper, args.model, args.ollama, voice, stt_lang)
+            await voice_loop([lamp], args.preset, whisper, args.model, args.ollama, voice, stt_lang)
         finally:
             await lamp.disconnect()
     else:
         async with lamp:
-            await voice_loop(lamp, args.preset, whisper, args.model, args.ollama, voice, stt_lang)
+            await voice_loop([lamp], args.preset, whisper, args.model, args.ollama, voice, stt_lang)
 
 
 def main() -> None:

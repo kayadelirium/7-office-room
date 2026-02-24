@@ -13,6 +13,10 @@ main.py — единая точка входа для управления BLE-�
 Посмотреть GATT-сервисы лампы:
     python main.py --inspect <UUID>
 
+Подключить лампы по умолчанию (из DEFAULT_LAMPS в voice/commands.py):
+    python main.py --default
+    python main.py --default on
+
 Интерактивный режим (Surplife, пресет по умолчанию):
     python main.py <UUID>
 
@@ -39,7 +43,8 @@ main.py — единая точка входа для управления BLE-�
   govee         — Govee (упрощённый протокол)
   nus           — Nordic UART Service (DIY-лампы на nRF)
   triones       — Triones-совместимые лампы
-  happylighting — HappyLighting / ELK-BLEDOM
+  happylighting — HappyLighting / ELK-BLEDOM (сервис FE00)
+  elk_bledom    — ELK-BLEDOM вариант B / Lotus Lantern (сервис FFF0)
 
 ─────────────────────────────────────────────────────────
 АРХИТЕКТУРА
@@ -118,18 +123,18 @@ HELP_SURPLIFE = """\
 # Интерактивный цикл
 # ---------------------------------------------------------------------------
 
-async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
+async def interactive_loop(lamps: list[AbstractLampClient], preset: str) -> None:
     """
-    Принимать команды из stdin и выполнять их на лампе.
+    Принимать команды из stdin и выполнять их на лампах.
 
     Цикл работает до ввода 'exit'/'quit' или нажатия Ctrl+C/Ctrl+D.
     Все ошибки перехватываются и выводятся в консоль — соединение не рвётся.
+    Команды рассылаются на все лампы в списке одновременно через asyncio.gather.
     """
-    # device_name присутствует у SurplifeLampClient (обновляется после connect)
-    name = getattr(lamp, "device_name", lamp.address)
-    print(f"\nПодключено: {name}  (пресет: {preset})")
+    names = ", ".join(getattr(l, "device_name", l.address) for l in lamps)
+    print(f"\nПодключено: {names}  (пресет: {preset})")
     print(HELP_COMMON)
-    if isinstance(lamp, SurplifeLampClient):
+    if any(isinstance(l, SurplifeLampClient) for l in lamps):
         print(HELP_SURPLIFE)
 
     loop = asyncio.get_event_loop()
@@ -153,11 +158,11 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                 break
 
             elif cmd == "on":
-                await lamp.turn_on()
+                await asyncio.gather(*[l.turn_on() for l in lamps])
                 print("OK — включено.")
 
             elif cmd == "off":
-                await lamp.turn_off()
+                await asyncio.gather(*[l.turn_off() for l in lamps])
                 print("OK — выключено.")
 
             elif cmd == "rgb":
@@ -165,7 +170,7 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     print("Использование: rgb <R> <G> <B>")
                     continue
                 r, g, b = int(parts[1]), int(parts[2]), int(parts[3])
-                await lamp.set_color(r, g, b)
+                await asyncio.gather(*[l.set_color(r, g, b) for l in lamps])
                 print(f"OK — цвет {_swatch(r, g, b)}  rgb({r}, {g}, {b}).")
 
             elif cmd == "brightness":
@@ -173,7 +178,7 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     print("Использование: brightness <0-100>")
                     continue
                 pct = int(parts[1])
-                await lamp.set_brightness(pct)
+                await asyncio.gather(*[l.set_brightness(pct) for l in lamps])
                 print(f"OK — яркость {pct}%.")
 
             elif cmd == "temp":
@@ -181,7 +186,7 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     print("Использование: temp <2700-6500>")
                     continue
                 k = int(parts[1])
-                await lamp.set_color_temperature(k)
+                await asyncio.gather(*[l.set_color_temperature(k) for l in lamps])
                 print(f"OK — температура {k} K.")
 
             elif cmd == "effect":
@@ -190,17 +195,18 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     continue
                 mode = int(parts[1], 0)
                 speed = int(parts[2], 0) if len(parts) > 2 else 0x50
-                await lamp.set_effect(mode, speed)
+                await asyncio.gather(*[l.set_effect(mode, speed) for l in lamps])
                 print(f"OK — эффект 0x{mode:02x}.")
 
             elif cmd == "services":
-                await lamp.dump_services()
+                # Инспекция только первой лампы
+                await lamps[0].dump_services()
 
             elif cmd == "read":
                 if len(parts) < 2:
                     print("Использование: read <uuid>")
                     continue
-                data = await lamp.read_characteristic(parts[1])
+                data = await lamps[0].read_characteristic(parts[1])
                 print(f"← {data.hex()}  ({list(data)})")
 
             elif cmd == "write":
@@ -208,13 +214,14 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     print("Использование: write <hex>  (напр.: write 7123ff)")
                     continue
                 raw = bytes.fromhex(parts[1])
-                await lamp.write_raw(raw)
+                await asyncio.gather(*[l.write_raw(raw) for l in lamps])
                 print(f"OK — отправлено {raw.hex()}.")
 
             # ── Surplife-специфичные команды ──────────────────────────────
 
             elif cmd == "white":
-                if not isinstance(lamp, SurplifeLampClient):
+                surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+                if not surplife:
                     print("Команда 'white' доступна только для Surplife.")
                     continue
                 if len(parts) < 2:
@@ -222,12 +229,13 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                     continue
                 bright = int(parts[1])
                 cct = int(parts[2]) if len(parts) >= 3 else 50
-                await lamp.set_white(bright, cct)
+                await asyncio.gather(*[l.set_white(bright, cct) for l in surplife])
                 g_val = int(bright * 255 / 100)
                 print(f"OK — белый {_swatch(g_val, g_val, g_val)}  {bright}%  CCT={cct}%.")
 
             elif cmd == "hsv":
-                if not isinstance(lamp, SurplifeLampClient):
+                surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+                if not surplife:
                     print("Команда 'hsv' доступна только для Surplife.")
                     continue
                 if len(parts) < 2:
@@ -236,7 +244,7 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                 hue = int(parts[1])
                 sat = int(parts[2]) if len(parts) >= 3 else 100
                 bright = int(parts[3]) if len(parts) >= 4 else 100
-                await lamp.set_color_hsv(hue, sat, bright)
+                await asyncio.gather(*[l.set_color_hsv(hue, sat, bright) for l in surplife])
                 r, g, b = hsv_to_rgb_255(hue, sat, bright)
                 print(f"OK — HSV {_swatch(r, g, b)}  hue={hue}°  sat={sat}%  bright={bright}%.")
 
@@ -246,18 +254,18 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
                 bri = int(parts[1]) if len(parts) >= 2 else None
                 h, s, v = rgb_to_hsv(r, g, b)
                 actual_bri = bri if bri is not None else v
-                if isinstance(lamp, SurplifeLampClient):
-                    if s == 0:
-                        await lamp.set_white(actual_bri)
+                coros = []
+                for lamp in lamps:
+                    if isinstance(lamp, SurplifeLampClient):
+                        coros.append(lamp.set_white(actual_bri) if s == 0 else lamp.set_color_hsv(h, s, actual_bri))
                     else:
-                        await lamp.set_color_hsv(h, s, actual_bri)
-                else:
-                    await lamp.set_color(r, g, b)
+                        coros.append(lamp.set_color(r, g, b))
+                await asyncio.gather(*coros)
                 print(f"OK — цвет {_swatch(r, g, b)}  #{r:02X}{g:02X}{b:02X}.")
 
             elif cmd == "help":
                 print(HELP_COMMON)
-                if isinstance(lamp, SurplifeLampClient):
+                if any(isinstance(l, SurplifeLampClient) for l in lamps):
                     print(HELP_SURPLIFE)
 
             else:
@@ -273,9 +281,11 @@ async def interactive_loop(lamp: AbstractLampClient, preset: str) -> None:
 # Одиночная команда (неинтерактивный режим)
 # ---------------------------------------------------------------------------
 
-async def run_command(lamp: AbstractLampClient, cmd_args: list[str]) -> None:
+async def run_command(lamps: list[AbstractLampClient], cmd_args: list[str]) -> None:
     """
     Выполнить команду, переданную аргументами командной строки, и вернуться.
+
+    Команды рассылаются на все лампы в списке одновременно через asyncio.gather.
 
     cmd_args — список строк, первый элемент — имя команды, остальные — параметры.
     Примеры:
@@ -294,46 +304,48 @@ async def run_command(lamp: AbstractLampClient, cmd_args: list[str]) -> None:
     cmd = cmd_args[0].lower()
 
     if cmd == "on":
-        await lamp.turn_on()
+        await asyncio.gather(*[l.turn_on() for l in lamps])
         print("OK — включено.")
 
     elif cmd == "off":
-        await lamp.turn_off()
+        await asyncio.gather(*[l.turn_off() for l in lamps])
         print("OK — выключено.")
 
     elif cmd == "brightness":
         pct = int(cmd_args[1])
-        await lamp.set_brightness(pct)
+        await asyncio.gather(*[l.set_brightness(pct) for l in lamps])
         print(f"OK — яркость {pct}%.")
 
     elif cmd == "temp":
         k = int(cmd_args[1])
-        await lamp.set_color_temperature(k)
+        await asyncio.gather(*[l.set_color_temperature(k) for l in lamps])
         print(f"OK — температура {k} K.")
 
     elif cmd == "rgb":
         r, g, b = int(cmd_args[1]), int(cmd_args[2]), int(cmd_args[3])
-        await lamp.set_color(r, g, b)
+        await asyncio.gather(*[l.set_color(r, g, b) for l in lamps])
         print(f"OK — цвет {_swatch(r, g, b)}  rgb({r}, {g}, {b}).")
 
     elif cmd == "white":
-        if not isinstance(lamp, SurplifeLampClient):
+        surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+        if not surplife:
             print("Команда 'white' доступна только для Surplife.")
             sys.exit(1)
         bright = int(cmd_args[1])
         cct = int(cmd_args[2]) if len(cmd_args) >= 3 else 50
-        await lamp.set_white(bright, cct)
+        await asyncio.gather(*[l.set_white(bright, cct) for l in surplife])
         g_val = int(bright * 255 / 100)
         print(f"OK — белый {_swatch(g_val, g_val, g_val)}  {bright}%  CCT={cct}%.")
 
     elif cmd == "hsv":
-        if not isinstance(lamp, SurplifeLampClient):
+        surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+        if not surplife:
             print("Команда 'hsv' доступна только для Surplife.")
             sys.exit(1)
         hue = int(cmd_args[1])
         sat = int(cmd_args[2]) if len(cmd_args) >= 3 else 100
         bright = int(cmd_args[3]) if len(cmd_args) >= 4 else 100
-        await lamp.set_color_hsv(hue, sat, bright)
+        await asyncio.gather(*[l.set_color_hsv(hue, sat, bright) for l in surplife])
         r, g, b = hsv_to_rgb_255(hue, sat, bright)
         print(f"OK — HSV {_swatch(r, g, b)}  hue={hue}°  sat={sat}%  bright={bright}%.")
 
@@ -343,13 +355,13 @@ async def run_command(lamp: AbstractLampClient, cmd_args: list[str]) -> None:
         bri = int(cmd_args[1]) if len(cmd_args) >= 2 else None
         h, s, v = rgb_to_hsv(r, g, b)
         actual_bri = bri if bri is not None else v
-        if isinstance(lamp, SurplifeLampClient):
-            if s == 0:
-                await lamp.set_white(actual_bri)
+        coros = []
+        for lamp in lamps:
+            if isinstance(lamp, SurplifeLampClient):
+                coros.append(lamp.set_white(actual_bri) if s == 0 else lamp.set_color_hsv(h, s, actual_bri))
             else:
-                await lamp.set_color_hsv(h, s, actual_bri)
-        else:
-            await lamp.set_color(r, g, b)
+                coros.append(lamp.set_color(r, g, b))
+        await asyncio.gather(*coros)
         print(f"OK — цвет {_swatch(r, g, b)}  #{r:02X}{g:02X}{b:02X}.")
 
     else:
@@ -411,9 +423,29 @@ async def async_main(args: argparse.Namespace) -> None:
         await inspect_device(args.inspect)
         return
 
+    # ── Режим подключения к лампам по умолчанию ──────────────────────────
+    if args.default:
+        from voice.commands import _connect_all_defaults
+        lamps = await _connect_all_defaults(voice=None)
+        if not lamps:
+            print("Лампы по умолчанию не найдены. Проверьте DEFAULT_LAMPS в voice/commands.py.")
+            sys.exit(1)
+        try:
+            if args.cmd:
+                await run_command(lamps, args.cmd)
+            else:
+                await interactive_loop(lamps, "default")
+        finally:
+            for lamp in lamps:
+                try:
+                    await lamp.disconnect()
+                except Exception:
+                    pass
+        return
+
     # ── Нужен адрес устройства ────────────────────────────────────────────
     if not args.address:
-        print("Укажите UUID/MAC устройства или используйте --scan для поиска.")
+        print("Укажите UUID/MAC устройства или используйте --scan / --default.")
         sys.exit(1)
 
     lamp = _make_lamp(args.address, args.preset)
@@ -427,18 +459,18 @@ async def async_main(args: argparse.Namespace) -> None:
         print(f"OK  ({lamp.device_name})")
         try:
             if args.cmd:
-                await run_command(lamp, args.cmd)
+                await run_command([lamp], args.cmd)
             else:
-                await interactive_loop(lamp, args.preset)
+                await interactive_loop([lamp], args.preset)
         finally:
             await lamp.disconnect()
     else:
         # BLELampClient поддерживает async with (через AbstractLampClient.__aenter__)
         async with lamp:
             if args.cmd:
-                await run_command(lamp, args.cmd)
+                await run_command([lamp], args.cmd)
             else:
-                await interactive_loop(lamp, args.preset)
+                await interactive_loop([lamp], args.preset)
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +494,8 @@ def main() -> None:
                       help="Сканировать классические BT-устройства (колонки, наушники)")
     mode.add_argument("--inspect", metavar="UUID",
                       help="Подключиться к устройству и показать его GATT-сервисы")
+    mode.add_argument("--default", "-d", action="store_true",
+                      help="Найти и подключить лампы по умолчанию (DEFAULT_LAMPS в voice/commands.py)")
 
     # UUID лампы — первый позиционный аргумент (необязателен при --scan/--inspect)
     parser.add_argument("address", nargs="?",

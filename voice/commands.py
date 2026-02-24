@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from lights import (
     AbstractLampClient, SurplifeLampClient,
     make_client, find_lamp,
@@ -12,9 +14,19 @@ from voice.tts import Voice, speak, do_and_speak
 import speaker
 
 
-# ─── Имя лампы по умолчанию ───────────────────────────────────────────────────
+# ─── Лампы по умолчанию ───────────────────────────────────────────────────────
+#
+# Перебираются при команде «включи» / «дефолтная лампа» — подключаются все.
+# Поля:
+#   name    — подстрока имени для BLE-поиска (используется если address пуст)
+#   preset  — протокол подключения
+#   address — MAC (Linux: AA:BB:CC:DD:EE:FF) или UUID (macOS: XXXXXXXX-XXXX-...)
+#             Если задан — подключаемся напрямую, минуя сканирование.
 
-DEFAULT_LAMP_NAME = "IOTBT5AB"
+DEFAULT_LAMPS: list[dict] = [
+    {"name": "ELK-BLEDOM", "preset": "elk_bledom",  "address": ""},
+    {"name": "IOTBT5AB",   "preset": "surplife",    "address": ""},
+]
 
 
 # ─── Создание клиента ─────────────────────────────────────────────────────────
@@ -73,6 +85,28 @@ def _is_hex(cmd: str) -> bool:
     return cmd.startswith("#") or (len(cmd) == 6 and all(c in "0123456789abcdef" for c in cmd))
 
 
+async def _connect_all_defaults(voice: Voice) -> list[AbstractLampClient]:
+    """Подключиться ко всем лампам из DEFAULT_LAMPS.
+
+    Адреса ищутся и подключения выполняются последовательно — BLE-сканирование
+    не поддерживает параллельный запуск нескольких find_device.
+    Возвращает список успешно подключённых клиентов.
+    """
+    connected: list[AbstractLampClient] = []
+    for entry in DEFAULT_LAMPS:
+        addr = entry.get("address", "").strip()
+        if not addr:
+            addr = await find_lamp(entry["name"], timeout=8.0)
+        if not addr:
+            continue
+        try:
+            lamp = await _do_connect(addr, entry["preset"], voice)
+            connected.append(lamp)
+        except Exception as e:
+            print(f"Не удалось подключиться к {entry['name']}: {e}")
+    return connected
+
+
 async def _do_connect(address: str, preset: str, voice: Voice) -> AbstractLampClient:
     """Подключиться к лампе по адресу, сообщить голосом и вернуть клиент."""
     new_lamp = make_lamp(address, preset)
@@ -88,12 +122,16 @@ async def _do_connect(address: str, preset: str, voice: Voice) -> AbstractLampCl
 # ─── Выполнение команды ───────────────────────────────────────────────────────
 
 async def execute(
-    lamp: AbstractLampClient | None,
+    lamps: list[AbstractLampClient],
     command: str,
     preset: str,
     voice: Voice = None,
-) -> AbstractLampClient | None:
-    """Разобрать строку-команду и выполнить её. Возвращает новый клиент при connect-командах."""
+) -> list[AbstractLampClient] | None:
+    """Разобрать строку-команду и выполнить её.
+
+    Команды рассылаются на все лампы в списке одновременно.
+    Возвращает новый список ламп при connect-командах, иначе None.
+    """
     parts = command.strip().split()
     if not parts:
         return None
@@ -103,71 +141,76 @@ async def execute(
 
     # Команды лампы недоступны без подключения (кроме "on" — он умеет авто-подключаться)
     if (cmd in _LAMP_CMDS or _is_hex(cmd)) and cmd != "on":
-        if lamp is None:
+        if not lamps:
             print("Лампа не подключена. Скажите 'подключись к <имя>' или запустите с UUID.")
             await speak("Лампа не подключена. Скажите подключись к, и назовите имя устройства.", voice)
             return None
 
     try:
         if cmd == "on":
-            new_lamp = None
-            if lamp is None:
-                # Авто-подключение к лампе по умолчанию
-                print(f"Лампа не подключена. Ищу '{DEFAULT_LAMP_NAME}'...")
-                address = await find_lamp(DEFAULT_LAMP_NAME, timeout=10.0)
-                if address is None:
-                    print(f"Лампа '{DEFAULT_LAMP_NAME}' не найдена.")
-                    await speak(f"Лампа {DEFAULT_LAMP_NAME} не найдена.", voice)
+            if not lamps:
+                # Авто-подключение ко всем дефолтным лампам
+                print("Лампа не подключена. Ищу лампы по умолчанию...")
+                new_lamps = await _connect_all_defaults(voice)
+                if not new_lamps:
+                    print("Лампы по умолчанию не найдены.")
+                    await speak("Лампа не найдена.", voice)
                     return None
-                lamp = await _do_connect(address, preset, voice)
-                new_lamp = lamp
-            await do_and_speak(lamp.turn_on(), "Включено.", voice)
+                await asyncio.gather(*[l.turn_on() for l in new_lamps])
+                await speak("Включено.", voice)
+                print("OK")
+                return new_lamps
+            await asyncio.gather(*[l.turn_on() for l in lamps])
+            await speak("Включено.", voice)
             print("OK")
-            return new_lamp
 
         elif cmd == "off":
-            await do_and_speak(lamp.turn_off(), "Выключено.", voice)
+            await asyncio.gather(*[l.turn_off() for l in lamps])
+            await speak("Выключено.", voice)
             print("OK")
 
         elif cmd == "brightness":
             pct = int(parts[1])
-            await do_and_speak(lamp.set_brightness(pct), f"Яркость {pct} процентов.", voice)
+            await asyncio.gather(*[l.set_brightness(pct) for l in lamps])
+            await speak(f"Яркость {pct} процентов.", voice)
             print("OK")
 
         elif cmd == "temp":
             k = int(parts[1])
-            await do_and_speak(lamp.set_color_temperature(k), f"Температура {k} кельвин.", voice)
+            await asyncio.gather(*[l.set_color_temperature(k) for l in lamps])
+            await speak(f"Температура {k} кельвин.", voice)
             print("OK")
 
         elif cmd == "rgb":
-            await do_and_speak(
-                lamp.set_color(int(parts[1]), int(parts[2]), int(parts[3])),
-                "Цвет установлен.", voice,
-            )
+            await asyncio.gather(*[
+                l.set_color(int(parts[1]), int(parts[2]), int(parts[3])) for l in lamps
+            ])
+            await speak("Цвет установлен.", voice)
             print("OK")
 
         elif cmd == "white":
-            if not isinstance(lamp, SurplifeLampClient):
+            surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+            if not surplife:
                 print("Команда white поддерживается только для Surplife.")
                 await speak("Команда белого режима поддерживается только для Surplife.", voice)
                 return None
             bright = int(parts[1])
             cct = int(parts[2]) if len(parts) > 2 else 50
-            await do_and_speak(
-                lamp.set_white(bright, cct),
-                f"Белый режим, яркость {bright} процентов.", voice,
-            )
+            await asyncio.gather(*[l.set_white(bright, cct) for l in surplife])
+            await speak(f"Белый режим, яркость {bright} процентов.", voice)
             print("OK")
 
         elif cmd == "hsv":
-            if not isinstance(lamp, SurplifeLampClient):
+            surplife = [l for l in lamps if isinstance(l, SurplifeLampClient)]
+            if not surplife:
                 print("Команда hsv поддерживается только для Surplife.")
                 await speak("Команда HSV поддерживается только для Surplife.", voice)
                 return None
             hue = int(parts[1])
             sat = int(parts[2]) if len(parts) > 2 else 100
             bright = int(parts[3]) if len(parts) > 3 else 100
-            await do_and_speak(lamp.set_color_hsv(hue, sat, bright), "Цвет установлен.", voice)
+            await asyncio.gather(*[l.set_color_hsv(hue, sat, bright) for l in surplife])
+            await speak("Цвет установлен.", voice)
             print("OK")
 
         elif cmd == "connect":
@@ -183,7 +226,7 @@ async def execute(
                 print(f"Устройство '{name}' не найдено.")
                 await speak(f"Устройство {name} не найдено.", voice)
                 return None
-            return await _do_connect(address, preset, voice)
+            return [await _do_connect(address, preset, voice)]
 
         elif cmd == "autoconnect":
             name_filter = parts[1] if len(parts) > 1 else None
@@ -199,17 +242,17 @@ async def execute(
                 print("Устройства не найдены.")
                 await speak("Устройства поблизости не найдены.", voice)
                 return None
-            return await _do_connect(address, preset, voice)
+            return [await _do_connect(address, preset, voice)]
 
         elif cmd == "default":
-            print(f"Поиск лампы по умолчанию '{DEFAULT_LAMP_NAME}'...")
-            await speak(f"Ищу лампу {DEFAULT_LAMP_NAME}.", voice)
-            address = await find_lamp(DEFAULT_LAMP_NAME, timeout=10.0)
-            if address is None:
-                print(f"Лампа '{DEFAULT_LAMP_NAME}' не найдена.")
-                await speak(f"Лампа {DEFAULT_LAMP_NAME} не найдена.", voice)
+            print("Поиск ламп по умолчанию...")
+            await speak("Ищу лампы по умолчанию.", voice)
+            new_lamps = await _connect_all_defaults(voice)
+            if not new_lamps:
+                print("Лампы по умолчанию не найдены.")
+                await speak("Лампа не найдена.", voice)
                 return None
-            return await _do_connect(address, preset, voice)
+            return new_lamps
 
         elif cmd == "scan":
             timeout = 10.0
@@ -228,19 +271,22 @@ async def execute(
             await speak(f"Найдено {len(results)} устройств.", voice)
 
         elif cmd == "status":
-            status_text = lamp_status_text(lamp)
+            status_text = lamp_status_text(lamps[0])
             print(f"Статус: {status_text}")
             await speak(status_text, voice)
 
         elif _is_hex(cmd):
             r, g, b = parse_hex_color(cmd)
-            if isinstance(lamp, SurplifeLampClient):
-                h, s, v = rgb_to_hsv(r, g, b)
-                bri = int(parts[1]) if len(parts) > 1 else v
-                coro = lamp.set_white(bri) if s == 0 else lamp.set_color_hsv(h, s, bri)
-            else:
-                coro = lamp.set_color(r, g, b)
-            await do_and_speak(coro, "Цвет установлен.", voice)
+            coros = []
+            for lamp in lamps:
+                if isinstance(lamp, SurplifeLampClient):
+                    h, s, v = rgb_to_hsv(r, g, b)
+                    bri = int(parts[1]) if len(parts) > 1 else v
+                    coros.append(lamp.set_white(bri) if s == 0 else lamp.set_color_hsv(h, s, bri))
+                else:
+                    coros.append(lamp.set_color(r, g, b))
+            await asyncio.gather(*coros)
+            await speak("Цвет установлен.", voice)
             print("OK")
 
         elif cmd == "speaker":
@@ -261,12 +307,10 @@ async def execute(
             elif action == "connect":
                 name_arg = parts[2] if len(parts) > 2 else ""
                 if name_arg:
-                    # Подключение по имени: speaker connect JBL
                     print(f"Поиск BT-устройства «{name_arg}»...")
                     await speak(f"Ищу {name_arg}, подождите.", voice)
                     ok, msg = await speaker.connect_by_name(name_arg)
                 elif speaker.is_configured():
-                    # Подключение по сохранённому MAC/имени
                     print("Подключение BT-колонки...")
                     ok, msg = await speaker.connect()
                 else:

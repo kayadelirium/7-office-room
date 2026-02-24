@@ -48,6 +48,8 @@ GATT (Generic Attribute Profile) — иерархическая структур
   3. Используйте эти UUID в --service-uuid / --write-uuid или добавьте пресет.
 """
 
+from __future__ import annotations
+
 import asyncio
 import argparse
 from bleak import BleakScanner, BleakClient

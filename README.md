@@ -59,7 +59,7 @@ python voice_assistant.py --no-tts
 | «романтическая атмосфера» | `rgb 180 30 10` |
 | «3000 кельвин» | `temp 3000` |
 | «какой сейчас цвет» | голосом сообщает текущий режим |
-| «включи дефолтную лампу» | найти и подключить `IOTBT5AB` |
+| «включи дефолтную лампу» | найти и подключить все лампы из `DEFAULT_LAMPS` (`ELK-BLEDOM` + `IOTBT5AB`) |
 | «подключись к Surplife» | найти и подключить по имени |
 | «найди лампы» / «найди BLE устройства» | BLE-сканирование (`scan`) |
 | «подключи колонку» / «включи колонку» | подключить BT-колонку (по сохранённому MAC) |
@@ -99,10 +99,25 @@ python main.py --scan-speakers
 На **macOS** адрес лампы выглядит как UUID: `12345678-ABCD-1234-ABCD-1234567890AB`
 На **Linux/Windows** — как MAC: `AA:BB:CC:DD:EE:FF`
 
+### Лампы по умолчанию (`--default` / `-d`)
+
+Подключиться ко всем лампам из `DEFAULT_LAMPS` в [voice/commands.py](voice/commands.py) без указания адреса.
+Команды рассылаются на все лампы одновременно.
+
+```bash
+# Интерактивный режим со всеми лампами по умолчанию
+python main.py --default
+
+# Одиночная команда
+python main.py --default on
+python main.py --default off
+python main.py --default brightness 70
+```
+
 ### Подключиться и управлять
 
 ```bash
-# Интерактивный режим
+# Интерактивный режим (конкретная лампа по адресу)
 python main.py <UUID>
 
 # Одиночная команда и выход
@@ -147,7 +162,8 @@ python main.py <UUID> temp 4000
 python main.py --preset magic_home <MAC>
 python main.py --preset govee <MAC>
 python main.py --preset triones <MAC>
-python main.py --preset happylighting <MAC>
+python main.py --preset happylighting <MAC>   # ELK-BLEDOM вариант A (сервис FE00)
+python main.py --preset elk_bledom <MAC>     # ELK-BLEDOM вариант B / Lotus Lantern (сервис FFF0)
 python main.py --preset nus <MAC>
 ```
 
@@ -155,10 +171,51 @@ python main.py --preset nus <MAC>
 
 ## Отладка и диагностика
 
-```bash
-# Показать GATT-сервисы и характеристики
-python main.py --inspect <UUID>
+### --inspect: инспекция GATT-сервисов
 
+Подключается к устройству и выводит его полную GATT-иерархию:
+
+```bash
+python main.py --inspect <UUID>
+```
+
+Пример вывода:
+
+```
+[Сервис] 0000fff0-0000-1000-8000-00805f9b34fb  —  Unknown
+    [Хар-ка] 0000fff1-0000-1000-8000-00805f9b34fb  props=[read, notify]  —  Unknown
+    [Хар-ка] 0000fff3-0000-1000-8000-00805f9b34fb  props=[write-without-response]  —  Unknown
+```
+
+**Как читать вывод:**
+
+| Свойство | Значение |
+|---|---|
+| `read` | можно прочитать значение (`read <uuid>` в интерактивном режиме) |
+| `write` / `write-without-response` | сюда отправляются команды управления |
+| `notify` / `indicate` | устройство само присылает уведомления об изменении состояния |
+
+**Как определить пресет по UUID характеристики:**
+
+| UUID write-характеристики | Пресет |
+|---|---|
+| `0000ff01-...` | `surplife` |
+| `0000ffd9-...` | `magic_home` |
+| `0000ff01-...` (сервис `ffff`) | `triones` |
+| `0000ff11-...` (сервис `fe00`) | `happylighting` |
+| `0000fff3-...` (сервис `fff0`) | `elk_bledom` (ELK-BLEDOM / Lotus Lantern) |
+| `6e400002-b5a3-f393-e0a9-e50e24dcca9e` | `nus` (Nordic UART) |
+
+После определения характеристики используйте соответствующий пресет:
+
+```bash
+python main.py --preset magic_home <UUID>
+python main.py --preset triones <UUID>
+```
+
+Если UUID не совпадает ни с одним известным — можно отправить сырые байты через `write <hex>` в интерактивном режиме и понаблюдать за реакцией устройства.
+
+```bash
 # Подробный лог BLE-операций
 python main.py <UUID> --verbose
 

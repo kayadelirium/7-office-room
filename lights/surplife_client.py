@@ -62,7 +62,7 @@ GATT-ХАРАКТЕРИСТИКИ
 ─────────────────────────────────────────────────────────
 ПРИМЕР ИСПОЛЬЗОВАНИЯ
 ─────────────────────────────────────────────────────────
-    from surplife_client import SurplifeLampClient
+    from lights import SurplifeLampClient
 
     async with SurplifeLampClient("<UUID>") as lamp:
         await lamp.turn_on()

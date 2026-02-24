@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 import sounddevice as sd
 
@@ -27,7 +25,7 @@ class VoiceRecorder:
     def __init__(self) -> None:
         self._block = int(SAMPLE_RATE * BLOCK_DURATION)
 
-    def record_phrase(self) -> Optional[np.ndarray]:
+    def record_phrase(self) -> np.ndarray | None:
         """
         Ждёт начала речи, накапливает блоки, останавливается после тишины.
         Возвращает None если речи не было.

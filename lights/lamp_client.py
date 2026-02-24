@@ -20,9 +20,13 @@ lamp_client.py — библиотека для управления BLE-ламп
        Сервис: FFFF | Запись: FF01 | Notify: FF02
        Команды: 0x56 (цвет), 0xBB (эффект), 0xCC (питание)
 
-  5. HappyLighting / ELK-BLEDOM
+  5. HappyLighting / ELK-BLEDOM (вариант A)
        Сервис: FE00 | Запись: FF11 | Notify: FF22
        Команды: 0x7e-формат
+
+  5b. ELK-BLEDOM (вариант B, Lotus Lantern и др.)
+       Сервис: FFF0 | Запись: FFF3 | Notify: FFF4
+       Команды: те же 0x7e-формат, другие UUID (пресет elk_bledom)
 
   6. Surplife — см. surplife_client.py
        Использует собственный seq-заголовок, отдельный класс.
@@ -52,14 +56,14 @@ lamp_client.py — библиотека для управления BLE-ламп
 ─────────────────────────────────────────────────────────
 БЫСТРЫЙ СТАРТ
 ─────────────────────────────────────────────────────────
-    from lamp_client import make_client
+    from lights import make_client
 
     async with make_client("AA:BB:CC:DD:EE:FF", "magic_home") as lamp:
         await lamp.turn_on()
         await lamp.set_color(255, 0, 128)   # малиновый
         await lamp.set_brightness(80)       # 80%
 
-Для Surplife использовать surplife_client.SurplifeLampClient напрямую.
+Для Surplife использовать lights.SurplifeLampClient напрямую.
 """
 
 from __future__ import annotations
@@ -104,10 +108,15 @@ TRIONES_SERVICE_UUID     = "0000ffff-0000-1000-8000-00805f9b34fb"
 TRIONES_WRITE_UUID       = "0000ff01-0000-1000-8000-00805f9b34fb"
 TRIONES_NOTIFY_UUID      = "0000ff02-0000-1000-8000-00805f9b34fb"
 
-# HappyLighting / ELK-BLEDOM — другой формат команд (0x7e-обёртка)
+# HappyLighting / ELK-BLEDOM (вариант A) — сервис FE00
 HAPPY_SERVICE_UUID       = "0000fe00-0000-1000-8000-00805f9b34fb"
 HAPPY_WRITE_UUID         = "0000ff11-0000-1000-8000-00805f9b34fb"
 HAPPY_NOTIFY_UUID        = "0000ff22-0000-1000-8000-00805f9b34fb"
+
+# ELK-BLEDOM (вариант B) — сервис FFF0; те же команды 0x7e...0xef, другие UUID
+ELK_SERVICE_UUID         = "0000fff0-0000-1000-8000-00805f9b34fb"
+ELK_WRITE_UUID           = "0000fff3-0000-1000-8000-00805f9b34fb"
+ELK_NOTIFY_UUID          = "0000fff4-0000-1000-8000-00805f9b34fb"
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +189,22 @@ PRESETS: dict[str, LampConfig] = {
         cmd_on=bytes([0xCC, 0x23, 0x33]),
         cmd_off=bytes([0xCC, 0x24, 0x33]),
     ),
-    # HappyLighting / ELK-BLEDOM — команды обёрнуты в 0x7e...0xef (7-9 байт).
+    # HappyLighting / ELK-BLEDOM (вариант A, сервис FE00) — команды 0x7e...0xef.
     "happylighting": LampConfig(
         service_uuid=HAPPY_SERVICE_UUID,
         write_uuid=HAPPY_WRITE_UUID,
         notify_uuid=HAPPY_NOTIFY_UUID,
-        cmd_on=bytes([0x7e, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0xff, 0x00]),
-        cmd_off=bytes([0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00]),
+        cmd_on=bytes([0x7e, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0xff, 0xef]),
+        cmd_off=bytes([0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xff, 0xef]),
+    ),
+    # ELK-BLEDOM (вариант B, сервис FFF0) — те же команды 0x7e...0xef, другие UUID.
+    # Используется рядом прошивок Lotus Lantern и некоторыми ELK-BLEDOM лентами.
+    "elk_bledom": LampConfig(
+        service_uuid=ELK_SERVICE_UUID,
+        write_uuid=ELK_WRITE_UUID,
+        notify_uuid=ELK_NOTIFY_UUID,
+        cmd_on=bytes([0x7e, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0xff, 0xef]),
+        cmd_off=bytes([0x7e, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xff, 0xef]),
     ),
 }
 
@@ -645,8 +663,8 @@ class TrionesLampClient(BLELampClient):
     но команда эффекта отличается: [0xBB, mode, speed, 0x44].
     """
 
-    def __init__(self, address: str, **kwargs):
-        super().__init__(address, config=PRESETS["triones"], **kwargs)
+    def __init__(self, address: str, config: LampConfig | None = None, **kwargs):
+        super().__init__(address, config=config or PRESETS["triones"], **kwargs)
 
     def _build_color_cmd(self, r: int, g: int, b: int) -> bytes:
         # [0x56, R, G, B, 0x00, 0xF0, 0xAA] — идентично Magic Home
@@ -676,8 +694,8 @@ class HappyLightingLampClient(BLELampClient):
       0x05 — цвет RGB
     """
 
-    def __init__(self, address: str, **kwargs):
-        super().__init__(address, config=PRESETS["happylighting"], **kwargs)
+    def __init__(self, address: str, config: LampConfig | None = None, **kwargs):
+        super().__init__(address, config=config or PRESETS["happylighting"], **kwargs)
 
     def _build_color_cmd(self, r: int, g: int, b: int) -> bytes:
         # [0x7e, 0x00, 0x05, 0x03, R, G, B, 0x00, 0xef]
@@ -687,14 +705,14 @@ class HappyLightingLampClient(BLELampClient):
     def _build_brightness_cmd(self, value: int) -> bytes:
         # [0x7e, 0x00, 0x01, value, 0x01, 0xff, 0xff, 0x00, 0xef]
         #  0x01 = яркость, value = 0-255, 0x01 = включено
+        # Используется только как fallback (если цвет ещё не задан).
+        # На большинстве ELK-BLEDOM прошивок эта команда ненадёжна —
+        # вместо неё base-класс масштабирует RGB и переотправляет set_color.
         return bytes([0x7e, 0x00, 0x01, value, 0x01, 0xff, 0xff, 0x00, 0xef])
 
-    async def set_brightness(self, percent: int) -> None:
-        """HappyLighting имеет нативную команду яркости — не меняет цвет напрямую."""
-        percent = max(0, min(100, percent))
-        value = round(percent * 255 / 100)
-        await self.write_raw(self._build_brightness_cmd(value))
-        logger.info("Яркость: %d%%", percent)
+    # set_brightness не переопределяется: base-класс (BLELampClient) корректно
+    # масштабирует RGB-компоненты если цвет был задан, что надёжнее нативной
+    # brightness-команды 0x7e...0x01 на устройствах с прошивкой ELK-BLEDOM.
 
     async def set_effect(self, mode: int, speed: int = 0x50) -> None:
         # [0x7e, 0x00, 0x03, mode, speed, 0x00, 0x00, 0xff, 0x00, 0xef]
@@ -709,6 +727,7 @@ class HappyLightingLampClient(BLELampClient):
 _PRESET_CLASSES: dict[str, type[BLELampClient]] = {
     "triones":       TrionesLampClient,
     "happylighting": HappyLightingLampClient,
+    "elk_bledom":    HappyLightingLampClient,  # те же команды, другие UUID
 }
 
 
@@ -716,15 +735,14 @@ def make_client(address: str, preset: str, **kwargs) -> BLELampClient:
     """
     Фабричная функция: создать правильный клиент по имени пресета.
 
-    Если для пресета есть специализированный класс — использует его.
+    Если для пресета есть специализированный класс — использует его,
+    передавая config из PRESETS[preset].
     Иначе создаёт BLELampClient с конфигом из PRESETS[preset].
 
     Kwargs передаются в конструктор (например, on_notify=callback).
     """
     cls = _PRESET_CLASSES.get(preset, BLELampClient)
-    if cls is BLELampClient:
-        return BLELampClient(address, config=PRESETS[preset], **kwargs)
-    return cls(address, **kwargs)
+    return cls(address, config=PRESETS[preset], **kwargs)
 
 
 # ---------------------------------------------------------------------------
