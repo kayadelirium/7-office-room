@@ -11,7 +11,9 @@ env/
 .env
 
 # Distribution / build
+client/node_modules/
 dist/
+static/
 build/
 *.egg-info/
 

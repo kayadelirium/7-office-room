@@ -1,21 +1,70 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
+
+  # ── Web-сервер (FastAPI + React) ──────────────────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: room-server
     ports:
-      - "127.0.0.1:11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
+      - "8765:8765"
     restart: unless-stopped
 
-    # ── GPU (раскомментировать на Linux с NVIDIA) ──────────────────────────
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # ── BLE на Linux ─────────────────────────────────────────────────────────
+    # bleak требует BlueZ и D-Bus. На macOS Docker BLE недоступен из контейнера
+    # (нет доступа к CoreBluetooth). Раскомментировать на Linux:
+    # network_mode: host        # BLE через host-сеть
+    # privileged: true
+    # volumes:
+    #   - /var/run/dbus:/var/run/dbus
 
-volumes:
-  ollama_models:
+
+  # ── Ollama (LLM) — нужна только для голосового помощника ────────────────
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "127.0.0.1:11434:11434"
+  #   volumes:
+  #     - ollama_models:/root/.ollama
+  #   restart: unless-stopped
+  #
+  #   # ── GPU (раскомментировать на Linux с NVIDIA) ───────────────────────
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: all
+  #   #           capabilities: [gpu]
+
+
+  # ── Голосовой помощник (опционально) ─────────────────────────────────────
+  # Только Linux: требует микрофон, динамики, BLE и BT.
+  # Модели (~3-4 ГБ) загружаются при первом запуске и кешируются в voice_cache.
+  #
+  # voice:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.voice
+  #   container_name: room-voice
+  #   stdin_open: true
+  #   tty: true
+  #   restart: unless-stopped
+  #   environment:
+  #     OLLAMA_URL: http://ollama:11434
+  #   depends_on:
+  #     - ollama
+  #   volumes:
+  #     - voice_cache:/root/.cache
+  #     - /var/run/dbus:/var/run/dbus
+  #   devices:
+  #     - /dev/snd
+  #   privileged: true
+  #   network_mode: host
+  #   command: ["--model", "gemma3:1b", "--whisper", "small"]
+
+
+# volumes:
+#   ollama_models:
+#   voice_cache:

@@ -1,0 +1,6 @@
+/* MUI CssBaseline обрабатывает сброс и базовые стили.
+   Здесь только то, что MUI не покрывает. */
+
+input[type=color] {
+  vertical-align: middle;
+}

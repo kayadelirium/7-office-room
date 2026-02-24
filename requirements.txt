@@ -1,5 +1,10 @@
 bleak>=0.21.1
 
+# server.py
+fastapi>=0.111.0
+uvicorn>=0.30.0
+aiofiles>=25.1.0
+
 # voice_assistant.py
 faster-whisper>=1.0.0
 sounddevice>=0.4.6

@@ -1,4 +1,4 @@
-# BLE Lamp Control + Voice Assistant
+# Room Control + Voice Assistant
 
 Управление умными BLE-лампами с Python. Поддерживает лампы **Surplife** (проприетарный протокол) и популярные универсальные протоколы: **Magic Home**, **Govee**, **Triones**, **HappyLighting**, **Nordic UART**.
 

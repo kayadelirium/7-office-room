@@ -1,0 +1,43 @@
+# Голосовой помощник: Whisper STT + Ollama + Silero TTS.
+# Образ тяжёлый (~3-4 ГБ) из-за torch/torchaudio.
+#
+# ВАЖНО: полноценная работа возможна только на Linux.
+# Требует при запуске:
+#   --device /dev/snd              — микрофон и динамики
+#   --privileged --net=host        — BLE (bleak) и BT-колонка (bluetoothctl)
+#   -v /var/run/dbus:/var/run/dbus — D-Bus для BlueZ
+#
+# Пример:
+#   docker run --rm -it \
+#     --device /dev/snd \
+#     --privileged --net=host \
+#     -v /var/run/dbus:/var/run/dbus \
+#     room-voice --model gemma3:1b
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# PortAudio (sounddevice), FFmpeg (faster-whisper), BlueZ (BLE + BT)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        portaudio19-dev \
+        libportaudio2 \
+        ffmpeg \
+        bluez \
+        libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY voice_assistant.py ./
+COPY lights/   ./lights/
+COPY voice/    ./voice/
+COPY speaker/  ./speaker/
+
+# Модели Whisper и Silero кешируются в /root/.cache при первом запуске.
+# Для ускорства повторных запусков монтируй том:
+#   -v voice_cache:/root/.cache
+VOLUME /root/.cache
+
+ENTRYPOINT ["python", "voice_assistant.py"]

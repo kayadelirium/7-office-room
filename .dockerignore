@@ -1,0 +1,20 @@
+# Игнорировать логи и временные файлы
+*.log
+tmp/
+*.tmp
+
+# Игнорировать папки зависимостей
+node_modules/
+npm-debug.log
+__pycache__/
+.venv/
+
+# Игнорировать систему контроля версий
+.git
+.gitignore
+
+# Игнорировать файлы конфигурации Docker и IDE
+Dockerfile
+.dockerignore
+.idea/
+.vscode/
