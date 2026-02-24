@@ -22,6 +22,29 @@ ollama pull gemma3:4b   # или gemma3:1b для скорости
 
 ---
 
+## Ollama в Docker
+
+Вместо нативной установки можно запустить Ollama в контейнере:
+
+```bash
+# Запустить (модели хранятся в именованном volume — переживают пересоздание контейнера)
+docker compose up -d
+
+# Скачать модель внутрь контейнера
+docker exec ollama ollama pull gemma3:4b
+
+# Остановить
+docker compose down
+```
+
+Ollama будет доступна на `http://127.0.0.1:11434` — адрес по умолчанию для `voice_assistant.py` и `main.py`, настраивать ничего не нужно.
+
+**Linux + NVIDIA GPU** — раскомментировать секцию `deploy` в [docker-compose.yml](docker-compose.yml).
+
+**macOS (Apple Silicon)** — Metal-ускорение в Docker недоступно, модели работают на CPU.
+
+---
+
 ## Голосовой ассистент
 
 ### Запуск
