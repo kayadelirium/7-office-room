@@ -9,7 +9,6 @@ export function useLampCard(address, onRefresh) {
     try {
       const r = await sendCommand(address, c)
       if (!r.ok) showToast(r.error, false)
-      else showToast('✓ ' + c)
     } catch (e) { showToast(e.message, false) }
   }
 
